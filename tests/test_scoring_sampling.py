@@ -39,6 +39,93 @@ def test_disallowed_script_skips_wordfreq_and_dominates_punctuation():
     assert any("character gate blocked" in explanation for explanation in score.explanations)
 
 
+def test_unknown_latin_word_prunes_without_language_evidence():
+    record = TokenRecord(9, "qzxq,", "qzxq,")
+    config = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        symbol_presets={"ascii-punctuation"},
+        wordfreq_languages=("en",),
+    )
+
+    score = score_token(record, config, dictionaries={})
+
+    assert score.retain_score == 0
+    assert score.non_retain_score > 0
+    assert score.status == "non_retain_candidate"
+    assert any("lack language evidence" in explanation for explanation in score.explanations)
+
+
+def test_known_word_plus_symbol_retains():
+    record = TokenRecord(10, "hello,", "hello,")
+    config = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        symbol_presets={"ascii-punctuation"},
+        wordfreq_languages=("en",),
+        wordfreq_min_zipf=4.0,
+    )
+
+    score = score_token(record, config, dictionaries={})
+
+    assert score.retain_score > score.non_retain_score
+    assert score.wordfreq_score > 0
+
+
+def test_symbol_only_token_retains_with_selected_preset():
+    record = TokenRecord(11, "=>", "=>")
+    config = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        symbol_presets={"coding"},
+        wordfreq_languages=(),
+    )
+
+    score = score_token(record, config, dictionaries={})
+
+    assert score.retain_score > 0
+    assert score.status == "retain_candidate"
+
+
+def test_single_letters_separated_by_symbols_do_not_need_language_evidence():
+    record = TokenRecord(12, "a+b", "a+b")
+    config = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        symbol_presets={"coding"},
+        wordfreq_languages=(),
+    )
+
+    score = score_token(record, config, dictionaries={})
+
+    assert score.retain_score > 0
+    assert score.non_retain_score == 0
+
+
+def test_multi_letter_segments_separated_by_symbols_need_language_evidence():
+    record = TokenRecord(13, "ab+cd", "ab+cd")
+    config = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        symbol_presets={"coding"},
+        wordfreq_languages=(),
+    )
+
+    score = score_token(record, config, dictionaries={})
+
+    assert score.non_retain_score > score.retain_score
+    assert any("ab" in explanation and "cd" in explanation for explanation in score.explanations)
+
+
+def test_escaped_sequences_do_not_require_language_evidence():
+    record = TokenRecord(14, "\\n", "\\n")
+    config = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        symbol_presets={"coding", "json"},
+        wordfreq_languages=(),
+    )
+
+    score = score_token(record, config, dictionaries={})
+
+    assert score.retain_score > 0
+    assert score.non_retain_score == 0
+
+
 def test_structural_whitespace_is_protected():
     record = TokenRecord(5, "ĉĉĠ", "\t\t ")
     config = ScoreConfig(wordfreq_languages=())
@@ -90,6 +177,26 @@ def test_wordfreq_lower_zipf_threshold_allows_weaker_matches():
     score = score_token(record, config, dictionaries={})
 
     assert score.wordfreq_score > 0
+
+
+def test_wordfreq_threshold_changes_known_word_retention():
+    record = TokenRecord(15, "hello", "hello")
+    strict = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        wordfreq_languages=("en",),
+        wordfreq_min_zipf=8.0,
+    )
+    loose = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        wordfreq_languages=("en",),
+        wordfreq_min_zipf=4.0,
+    )
+
+    strict_score = score_token(record, strict, dictionaries={})
+    loose_score = score_token(record, loose, dictionaries={})
+
+    assert strict_score.status == "non_retain_candidate"
+    assert loose_score.status == "retain_candidate"
 
 
 def test_sampling_is_deterministic():

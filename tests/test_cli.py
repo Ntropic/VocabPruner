@@ -9,10 +9,10 @@ class TinyTokenizer:
     special_tokens_map = {"bos_token": "<s>"}
 
     def get_vocab(self):
-        return {"<s>": 0, "hello": 1, "Ж": 2, "{": 3, "": 4}
+        return {"<s>": 0, "hello": 1, "Ж": 2, "{": 3, "": 4, "π": 5}
 
     def decode(self, token_ids, clean_up_tokenization_spaces=False):
-        values = {0: "<s>", 1: "hello", 2: "Ж", 3: "{", 4: ""}
+        values = {0: "<s>", 1: "hello", 2: "Ж", 3: "{", 4: "", 5: "π"}
         return values[token_ids[0]]
 
 
@@ -70,7 +70,7 @@ def test_analyze_default_sample_size_scores_all(monkeypatch, capsys, tmp_path):
 
     output = capsys.readouterr().out
     assert "Sample size: all" in output
-    assert "Classified tokens: 5" in output
+    assert "Classified tokens: 6" in output
 
 
 def test_analyze_rejects_invalid_sample_size(monkeypatch):
@@ -99,6 +99,8 @@ def test_analyze_show_ambiguous_filters_print_rows(monkeypatch, capsys, tmp_path
             "Inherited",
             "--wordfreq-lang",
             "en",
+            "--symbol-preset",
+            "mathematics",
             "--sample-size",
             "-1",
             "--show",
@@ -108,7 +110,7 @@ def test_analyze_show_ambiguous_filters_print_rows(monkeypatch, capsys, tmp_path
 
     output = capsys.readouterr().out
     assert "Displayed tokens:" in output
-    assert "''" in output
+    assert "No samples." in output
     assert "'hello'" not in output
 
 
@@ -146,7 +148,7 @@ def test_analyze_show_stats_ambiguous_prints_stats_and_ambiguous_rows(monkeypatc
     output = capsys.readouterr().out
     assert "Retained:" in output
     assert "Scores" in output
-    assert "''" in output
+    assert "No samples." in output
     assert "'hello'" not in output
 
 
@@ -171,7 +173,7 @@ def test_analyze_show_can_be_repeated(monkeypatch, capsys, tmp_path):
     output = capsys.readouterr().out
     assert "Show mode: stats ambiguous" in output
     assert "Scores" in output
-    assert "''" in output
+    assert "No samples." in output
     assert "'hello'" not in output
 
 
@@ -183,7 +185,7 @@ def test_analyze_show_ambiguous_words_prints_decoded_and_raw_only(monkeypatch, c
 
     output = capsys.readouterr().out
     assert "Ambiguous words" in output
-    assert "'' / ''" in output
+    assert "No samples." in output
     assert "score=" not in output
     assert "Scores" not in output
 
@@ -286,7 +288,7 @@ def test_analyze_save_with_ambiguous_saves_ambiguous_json_rows(monkeypatch, caps
     capsys.readouterr()
     saved = Path("ambiguous.jsonl").read_text(encoding="utf-8")
     assert "'hello'" not in saved
-    assert '"decoded_text": ""' in saved
+    assert saved == ""
 
 
 def test_analyze_rejects_output_argument(monkeypatch):

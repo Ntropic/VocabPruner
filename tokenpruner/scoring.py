@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 import unicodedata
 
 from tokenpruner.dictionaries import dictionary_matches, load_dictionaries
@@ -8,6 +9,8 @@ from tokenpruner.models import TokenRecord, TokenScore
 from tokenpruner.scripts import normalize_scripts, script_for_char, script_profile
 from tokenpruner.symbols import char_matches_symbol_preset, matching_symbol_presets, normalize_presets
 from tokenpruner.wordfreq_support import wordfreq_matches
+
+ESCAPE_RE = re.compile(r"""\\(?:[nrtbfav\\"']|x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})""")
 
 
 @dataclass(frozen=True)
@@ -78,43 +81,60 @@ def score_token(record: TokenRecord, config: ScoreConfig, dictionaries: dict[str
         non_retain_score += 100.0
         explanations.append(f"character gate blocked disallowed character families: {', '.join(gate.blocked)}")
     elif not protected:
-        for script, count in profile.counts.items():
-            ratio = count / max(1, profile.total_meaningful)
-            strength = 1.0 if not profile.low_confidence else 0.55
-            if script in config.keep_scripts:
-                retain_score += 3.0 * ratio * strength
-                explanations.append(f"{script} script contributes retained score {3.0 * ratio * strength:.2f}")
+        explanations.append("character gate passed; language scoring enabled")
 
     symbol_score = 0.0
+    segments = token_segments(text)
+    word_segments = language_word_segments(segments)
+    has_symbol_evidence = bool(presets)
+
     if presets and (protected or not gate.blocked):
         symbol_score = 1.25 * len(set(presets))
-        retain_score += symbol_score
+        if protected or not word_segments:
+            retain_score += symbol_score
         explanations.append(f"symbol/icon presets matched: {', '.join(sorted(set(presets)))}")
 
     dict_matches = []
     dictionary_score = 0.0
     wf_matches = []
     wordfreq_score = 0.0
-    if not protected and not gate.blocked:
-        dict_matches = dictionary_matches(text, dictionaries)
+    if not protected and not gate.blocked and word_segments:
+        for segment in word_segments:
+            dict_matches.extend(dictionary_matches(segment.text, dictionaries))
         dictionary_score = min(4.0, sum(match.score for match in dict_matches[:5]))
     if dictionary_score:
         retain_score += dictionary_score
         top = ", ".join(f"{match.dictionary}:{match.term}/{match.mode}" for match in dict_matches[:3])
         explanations.append(f"dictionary evidence matched: {top}")
 
-    if not protected and not gate.blocked:
-        wf_matches = wordfreq_matches(
-            text,
-            list(config.wordfreq_languages),
-            min_zipf=config.wordfreq_min_zipf,
-            top_pct=config.wordfreq_top_pct,
-        )
+    if not protected and not gate.blocked and word_segments:
+        for segment in word_segments:
+            wf_matches.extend(
+                wordfreq_matches(
+                    segment.text,
+                    list(config.wordfreq_languages),
+                    min_zipf=config.wordfreq_min_zipf,
+                    top_pct=config.wordfreq_top_pct,
+                )
+            )
         wordfreq_score = min(3.0, sum(match.score for match in wf_matches[:5]))
     if wordfreq_score:
         retain_score += wordfreq_score
         top = ", ".join(f"{match.language}:{match.term}/{match.mode}" for match in wf_matches[:3])
         explanations.append(f"wordfreq evidence matched: {top}")
+
+    if not protected and not gate.blocked:
+        if word_segments:
+            missing = [segment.text for segment in word_segments if not has_language_evidence(segment.text, dict_matches, wf_matches)]
+            if missing:
+                non_retain_score += 10.0
+                explanations.append(f"word segment(s) lack language evidence: {', '.join(missing[:5])}")
+        elif has_symbol_evidence:
+            retain_score += symbol_score
+            explanations.append("symbol-only token retained by selected symbol presets")
+        else:
+            non_retain_score += 10.0
+            explanations.append("no language word segments or selected symbol evidence")
 
     status = classify_status(retain_score, non_retain_score, protected)
     if not explanations:
@@ -179,3 +199,49 @@ def is_structural_token(text: str) -> bool:
 
 def is_control_char(char: str) -> bool:
     return unicodedata.category(char).startswith("C")
+
+
+@dataclass(frozen=True)
+class TokenSegment:
+    text: str
+    kind: str
+    escaped: bool = False
+
+
+def token_segments(text: str) -> list[TokenSegment]:
+    segments: list[TokenSegment] = []
+    index = 0
+    while index < len(text):
+        escape = ESCAPE_RE.match(text, index)
+        if escape:
+            segments.append(TokenSegment(escape.group(0), "escape", escaped=True))
+            index = escape.end()
+            continue
+        char = text[index]
+        kind = "word" if is_word_char(char) else "symbol"
+        start = index
+        index += 1
+        while index < len(text):
+            if ESCAPE_RE.match(text, index):
+                break
+            if ("word" if is_word_char(text[index]) else "symbol") != kind:
+                break
+            index += 1
+        segments.append(TokenSegment(text[start:index], kind))
+    return segments
+
+
+def language_word_segments(segments: list[TokenSegment]) -> list[TokenSegment]:
+    words = [segment for segment in segments if segment.kind == "word" and not segment.escaped]
+    if all(len(segment.text) == 1 for segment in words):
+        return []
+    return [segment for segment in words if len(segment.text) > 1]
+
+
+def is_word_char(char: str) -> bool:
+    return unicodedata.category(char)[0] in {"L", "M"}
+
+
+def has_language_evidence(text: str, dict_matches, wf_matches) -> bool:
+    normalized = text.lower()
+    return any(match.term == normalized or match.mode in {"exact", "subword"} for match in dict_matches + wf_matches)
