@@ -1,0 +1,12 @@
+cat
+chmod
+curl
+find
+grep
+journalctl
+mkdir
+ssh
+sudo
+systemctl
+tar
+wget

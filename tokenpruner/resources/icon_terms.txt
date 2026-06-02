@@ -1,0 +1,13 @@
+alert
+arrow
+bell
+calendar
+check
+chevron
+close
+download
+home
+menu
+search
+settings
+upload

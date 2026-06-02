@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from typing import Any
+
+
+@dataclass(frozen=True)
+class TokenRecord:
+    token_id: int
+    raw_token: str
+    decoded_text: str
+    is_special: bool = False
+    is_byte_fallback: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class ScriptProfile:
+    counts: dict[str, int]
+    total_meaningful: int
+    low_confidence: bool
+
+    @property
+    def scripts(self) -> list[str]:
+        return sorted(self.counts)
+
+    def ratio(self, script: str) -> float:
+        if self.total_meaningful == 0:
+            return 0.0
+        return self.counts.get(script, 0) / self.total_meaningful
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "counts": dict(self.counts),
+            "scripts": self.scripts,
+            "total_meaningful": self.total_meaningful,
+            "low_confidence": self.low_confidence,
+        }
+
+
+@dataclass(frozen=True)
+class DictionaryMatch:
+    dictionary: str
+    term: str
+    mode: str
+    score: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class WordfreqMatch:
+    language: str
+    term: str
+    mode: str
+    frequency: float
+    score: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class TokenScore:
+    token: TokenRecord
+    script_profile: ScriptProfile
+    retain_score: float
+    non_retain_score: float
+    symbol_score: float
+    dictionary_score: float
+    wordfreq_score: float
+    protected: bool
+    status: str
+    symbol_presets: list[str] = field(default_factory=list)
+    dictionary_matches: list[DictionaryMatch] = field(default_factory=list)
+    wordfreq_matches: list[WordfreqMatch] = field(default_factory=list)
+    explanations: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "token": self.token.to_dict(),
+            "script_profile": self.script_profile.to_dict(),
+            "retain_score": round(self.retain_score, 4),
+            "non_retain_score": round(self.non_retain_score, 4),
+            "symbol_score": round(self.symbol_score, 4),
+            "dictionary_score": round(self.dictionary_score, 4),
+            "wordfreq_score": round(self.wordfreq_score, 4),
+            "protected": self.protected,
+            "status": self.status,
+            "symbol_presets": list(self.symbol_presets),
+            "dictionary_matches": [match.to_dict() for match in self.dictionary_matches],
+            "wordfreq_matches": [match.to_dict() for match in self.wordfreq_matches],
+            "explanations": list(self.explanations),
+        }

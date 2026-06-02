@@ -1,0 +1,11 @@
+fastapi
+flask
+huggingface
+numpy
+pandas
+pydantic
+pytorch
+requests
+transformers
+typer
+uvicorn

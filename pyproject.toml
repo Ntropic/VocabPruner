@@ -1,0 +1,32 @@
+[project]
+name = "tokenpruner"
+version = "0.1.0"
+description = "Tokenizer vocabulary analysis and sample-first pruning recommendation validation."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "datasets>=2.19",
+    "pydantic>=2.7",
+    "regex>=2024.5.15",
+    "rich>=13.7",
+    "tqdm>=4.66",
+    "transformers>=4.41",
+    "typer>=0.12",
+    "wordfreq>=3.1",
+]
+
+[project.scripts]
+tokenpruner = "tokenpruner.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
