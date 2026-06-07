@@ -79,6 +79,14 @@ for the shared Serbo-Croatian list. Chinese, Japanese, and Korean may require th
 optional `wordfreq[cjk]` dependencies. See the
 [`wordfreq` supported-language documentation](https://github.com/rspeer/wordfreq#sources-and-supported-languages).
 
+## Structural and Protected Tokens
+
+- whitespace: spaces, tabs, newlines, and carriage returns
+- control and format characters
+- escape sequences such as `\n`, `\t`, `\xNN`, and `\uNNNN`
+- tokenizer special tokens: BOS, EOS, padding, chat, and modality tokens
+- byte-fallback tokens such as `<0x00>` through `<0xFF>`
+
 ## Accept/Prune Decision Tree
 
 TokenPruner classifies each token with a deterministic decision tree. The final decision is binary:
