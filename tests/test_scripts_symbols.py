@@ -1,5 +1,12 @@
 from tokenpruner.scripts import script_profile
-from tokenpruner.symbols import SYMBOL_PRESETS, contains_emoji_or_pictograph, matching_symbol_presets, normalize_presets
+from tokenpruner.symbols import (
+    SYMBOL_PRESETS,
+    contains_emoji_or_pictograph,
+    matching_symbol_presets,
+    normalize_presets,
+    symbol_literals,
+    symbol_presets,
+)
 
 
 def test_script_profile_detects_supported_scripts():
@@ -22,6 +29,25 @@ def test_symbol_and_emoji_detection():
     assert contains_emoji_or_pictograph("✅") is True
 
 
+def test_json_literals_match_as_literals_not_single_letters():
+    assert "json" not in matching_symbol_presets(" keindahan", {"json"})
+    assert "json" in matching_symbol_presets("true", {"json"})
+    assert "json" in matching_symbol_presets(" false", {"json"})
+    assert "json" in matching_symbol_presets("null,", {"json"})
+
+
 def test_symbol_preset_all_expands_to_every_builtin_preset():
     assert normalize_presets(["all"]) == set(SYMBOL_PRESETS)
     assert normalize_presets(["coding", "all"]) == set(SYMBOL_PRESETS)
+
+
+def test_symbol_presets_load_from_resource_files():
+    presets = symbol_presets()
+
+    assert "{" in presets["coding"]
+    assert "\\" in presets["coding"]
+    assert "π" in presets["mathematics"]
+    assert "λ" in presets["mathematics"]
+    assert "true" in symbol_literals()["json"]
+    assert "false" in symbol_literals()["json"]
+    assert "null" in symbol_literals()["json"]

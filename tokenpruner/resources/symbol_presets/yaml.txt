@@ -1,0 +1,2 @@
+# YAML punctuation and indicator characters.
+-_:[]{}.,#&*!|>'"%@`

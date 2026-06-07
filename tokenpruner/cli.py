@@ -4,11 +4,14 @@ import argparse
 import os
 from pathlib import Path
 
+from tokenpruner.architecture import inspect_model_architecture, load_model_config, render_model_architecture
 from tokenpruner.reports import (
+    ExampleCounts,
     filter_scores,
     render_jsonl,
     render_plain_text,
     should_show_ambiguous_words,
+    should_show_examples,
     should_show_json,
     should_show_rows,
 )
@@ -56,7 +59,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="SHOW",
         default=None,
-        help="What to print/save: all, ambiguous, ambiguous-words, stats, json. Can be combined.",
+        help=(
+            "What to print/save: stats, all, ambiguous, ambiguous-words, examples, json. "
+            "Can be combined. Examples accepts examples, examples:10, or "
+            "examples:retained=20,pruned=20,ambiguous=5."
+        ),
     )
     analyze_parser.add_argument("--save", help="Save selected token rows as JSONL to this file.")
     analyze_parser.add_argument("--trust-remote-code", action="store_true")
@@ -65,12 +72,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def inspect_command(model: str, trust_remote_code: bool = False) -> None:
     tokenizer = load_tokenizer(model, trust_remote_code=trust_remote_code)
+    config = load_model_config(model, trust_remote_code=trust_remote_code)
     records = tokenizer_records(tokenizer)
     stats = vocabulary_stats(records)
 
     print("Tokenizer Vocabulary")
     for key, value in stats.items():
         print(f"{key.replace('_', ' ').title()}: {value}")
+    print()
+    print(render_model_architecture(inspect_model_architecture(config)))
 
 
 def analyze_command(
@@ -93,7 +103,7 @@ def analyze_command(
         raise SystemExit("--sample-size must be -1 or at least 1")
     if workers < 1:
         raise SystemExit("--workers must be at least 1")
-    show = normalize_show_args(show)
+    show, example_counts = normalize_show_args(show)
     tokenizer = load_tokenizer(model, trust_remote_code=trust_remote_code)
     records = tokenizer_records(tokenizer)
     config = ScoreConfig.from_cli(
@@ -112,14 +122,16 @@ def analyze_command(
         save_path = Path(save)
         save_path.parent.mkdir(parents=True, exist_ok=True)
         save_path.write_text(render_jsonl(saved_scores) + ("\n" if saved_scores else ""), encoding="utf-8")
-    if should_show_rows(show) or should_show_ambiguous_words(show) or "stats" in set(show):
-        report = render_plain_text(model, records, scores, sample_size, seed, show=show, style="rich")
+    if should_show_rows(show) or should_show_ambiguous_words(show) or should_show_examples(show) or "stats" in set(show):
+        report = render_plain_text(
+            model, records, scores, sample_size, seed, show=show, example_counts=example_counts, style="rich"
+        )
         try:
             from rich.console import Console
 
             Console().print(report, soft_wrap=True)
         except ImportError:
-            print(render_plain_text(model, records, scores, sample_size, seed, show=show))
+            print(render_plain_text(model, records, scores, sample_size, seed, show=show, example_counts=example_counts))
     if should_show_json(show):
         jsonl = render_jsonl(visible_scores)
         if jsonl:
@@ -162,21 +174,62 @@ def save_scores(scores, show: list[str]):
     return list(scores)
 
 
-def normalize_show_args(show: list[str] | list[list[str]] | None) -> list[str]:
+def normalize_show_args(show: list[str] | list[list[str]] | None) -> tuple[list[str], ExampleCounts]:
     if not show:
-        return ["all"]
+        return ["all"], ExampleCounts()
     flattened: list[str] = []
     for item in show:
         if isinstance(item, list):
             flattened.extend(item)
         else:
             flattened.append(item)
-    valid = {"all", "ambiguous", "ambiguous-words", "stats", "json"}
-    unknown = [item for item in flattened if item not in valid]
+    normalized: list[str] = []
+    example_counts = ExampleCounts()
+    for item in flattened:
+        if item == "examples" or item.startswith("examples:"):
+            normalized.append("examples")
+            example_counts = parse_examples_spec(item)
+        else:
+            normalized.append(item)
+    valid = {"all", "ambiguous", "ambiguous-words", "examples", "stats", "json"}
+    unknown = [item for item in normalized if item not in valid]
     if unknown:
         raise SystemExit(f"Unsupported --show value(s): {', '.join(unknown)}")
-    ordered = [item for item in ["stats", "all", "ambiguous", "ambiguous-words", "json"] if item in flattened]
-    return ordered or ["all"]
+    ordered = [
+        item for item in ["stats", "all", "ambiguous", "ambiguous-words", "examples", "json"] if item in normalized
+    ]
+    return ordered or ["all"], example_counts
+
+
+def parse_examples_spec(value: str) -> ExampleCounts:
+    if value == "examples":
+        return ExampleCounts()
+    prefix = "examples:"
+    if not value.startswith(prefix):
+        raise SystemExit(f"Invalid examples spec: {value}")
+    spec = value[len(prefix) :]
+    if not spec:
+        raise SystemExit(f"Invalid examples spec: {value}")
+    if spec.isdigit():
+        count = int(spec)
+        return ExampleCounts(retained=count, pruned=count, ambiguous=count)
+    allowed = {"retained", "pruned", "ambiguous"}
+    counts = {"retained": 5, "pruned": 5, "ambiguous": 5}
+    parts = spec.split(",")
+    for part in parts:
+        if "=" not in part:
+            raise SystemExit(f"Invalid examples spec: {value}")
+        name, raw_count = part.split("=", 1)
+        if name not in allowed:
+            raise SystemExit(f"Invalid examples category: {name}")
+        try:
+            count = int(raw_count)
+        except ValueError as exc:
+            raise SystemExit(f"Invalid examples count: {raw_count}") from exc
+        if count < 0:
+            raise SystemExit(f"Invalid examples count: {count}")
+        counts[name] = count
+    return ExampleCounts(**counts)
 
 
 if __name__ == "__main__":

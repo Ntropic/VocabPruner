@@ -1,0 +1,5 @@
+# Mathematical operators and common Greek math/science letters.
++-=*/×÷±≈≠≤≥∞∑∏√∫∂∆∇^%<>|
+αβγδεζηθικλμνξοπρστυφχψω
+ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ
+µ

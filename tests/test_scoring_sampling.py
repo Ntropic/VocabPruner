@@ -1,6 +1,6 @@
 from tokenpruner.models import TokenRecord
 from tokenpruner.sampling import sample_records, score_sample
-from tokenpruner.scoring import ScoreConfig, score_token
+from tokenpruner.scoring import ScoreConfig, greedy_dictionary_split, score_token
 
 
 def test_special_and_byte_fallback_are_protected():
@@ -55,6 +55,21 @@ def test_unknown_latin_word_prunes_without_language_evidence():
     assert any("lack language evidence" in explanation for explanation in score.explanations)
 
 
+def test_unknown_latin_word_does_not_match_json_literal_letters():
+    record = TokenRecord(21, "Ġkeindahan", " keindahan")
+    config = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        symbol_presets={"json"},
+        wordfreq_languages=("en",),
+    )
+
+    score = score_token(record, config, dictionaries={})
+
+    assert "json" not in score.symbol_presets
+    assert not any("symbol/icon presets matched: json" in explanation for explanation in score.explanations)
+    assert score.status == "non_retain_candidate"
+
+
 def test_known_word_plus_symbol_retains():
     record = TokenRecord(10, "hello,", "hello,")
     config = ScoreConfig(
@@ -82,6 +97,34 @@ def test_symbol_only_token_retains_with_selected_preset():
 
     assert score.retain_score > 0
     assert score.status == "retain_candidate"
+
+
+def test_greek_math_letters_retain_with_mathematics_preset():
+    record = TokenRecord(16, "λ", "λ")
+    config = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        symbol_presets={"mathematics"},
+        wordfreq_languages=(),
+    )
+
+    score = score_token(record, config, dictionaries={})
+
+    assert score.retain_score > 0
+    assert score.status == "retain_candidate"
+
+
+def test_greek_text_still_prunes_without_greek_script():
+    record = TokenRecord(17, "λόγος", "λόγος")
+    config = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        symbol_presets={"mathematics"},
+        wordfreq_languages=(),
+    )
+
+    score = score_token(record, config, dictionaries={})
+
+    assert score.non_retain_score > score.retain_score
+    assert score.status == "non_retain_candidate"
 
 
 def test_single_letters_separated_by_symbols_do_not_need_language_evidence():
@@ -116,7 +159,7 @@ def test_escaped_sequences_do_not_require_language_evidence():
     record = TokenRecord(14, "\\n", "\\n")
     config = ScoreConfig(
         keep_scripts={"Latin", "Common", "Inherited"},
-        symbol_presets={"coding", "json"},
+        symbol_presets=set(),
         wordfreq_languages=(),
     )
 
@@ -124,6 +167,21 @@ def test_escaped_sequences_do_not_require_language_evidence():
 
     assert score.retain_score > 0
     assert score.non_retain_score == 0
+
+
+def test_unicode_escape_sequence_is_structural_without_symbol_preset():
+    record = TokenRecord(18, "\\u1234", "\\u1234")
+    config = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        symbol_presets=set(),
+        wordfreq_languages=(),
+    )
+
+    score = score_token(record, config, dictionaries={})
+
+    assert score.retain_score > 0
+    assert score.non_retain_score == 0
+    assert any("escape sequence" in explanation for explanation in score.explanations)
 
 
 def test_structural_whitespace_is_protected():
@@ -154,6 +212,96 @@ def test_dictionary_subword_score_counts_for_hello():
 
     assert score.dictionary_score > 0
     assert any(match.term == "hello" and match.mode == "subword" for match in score.dictionary_matches)
+
+
+def test_camel_case_identifier_parts_count_as_language_evidence():
+    record = TokenRecord(19, "classCallCheck", "classCallCheck")
+    config = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        symbol_presets={"json"},
+        wordfreq_languages=(),
+    )
+
+    score = score_token(record, config, dictionaries={"programming": {"class", "call", "check"}})
+
+    assert score.retain_score > score.non_retain_score
+    assert score.status == "retain_candidate"
+    assert any(match.term == "class" and match.mode == "exact" for match in score.dictionary_matches)
+    assert not any("lack language evidence" in explanation for explanation in score.explanations)
+
+
+def test_greedy_dictionary_split_prefers_longest_word_at_each_position():
+    dictionaries = {"test": {"ab", "abc", "cd", "de"}}
+
+    assert greedy_dictionary_split("abcde", dictionaries) == ["abc", "de"]
+
+
+def test_greedy_dictionary_split_requires_complete_coverage():
+    dictionaries = {"english": {"the", "her"}}
+
+    assert greedy_dictionary_split("theros", dictionaries) == []
+
+
+def test_greedy_dictionary_split_does_not_backtrack():
+    dictionaries = {"test": {"ab", "abc", "cd"}}
+
+    assert greedy_dictionary_split("abcd", dictionaries) == []
+
+
+def test_joined_dictionary_words_count_as_language_evidence():
+    record = TokenRecord(22, "typescript", "typescript")
+    config = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        wordfreq_languages=(),
+    )
+
+    score = score_token(record, config, dictionaries={"programming": {"type", "script"}})
+
+    assert score.status == "retain_candidate"
+    assert any(match.term == "type" and match.mode == "exact" for match in score.dictionary_matches)
+    assert any(match.term == "script" and match.mode == "exact" for match in score.dictionary_matches)
+    assert not any("lack language evidence" in explanation for explanation in score.explanations)
+
+
+def test_capitalization_then_greedy_splitting_can_be_combined():
+    record = TokenRecord(23, "abCdEfgh", "abCdEfgh")
+    config = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        wordfreq_languages=(),
+    )
+
+    score = score_token(record, config, dictionaries={"test": {"ab", "abc", "cd", "ef", "gh"}})
+
+    assert score.status == "retain_candidate"
+    assert not any("lack language evidence" in explanation for explanation in score.explanations)
+
+
+def test_capitalization_boundaries_can_rescue_a_failed_greedy_split():
+    record = TokenRecord(24, "abCd", "abCd")
+    config = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        wordfreq_languages=(),
+    )
+
+    score = score_token(record, config, dictionaries={"test": {"ab", "abc", "cd"}})
+
+    assert score.status == "retain_candidate"
+    assert not any("lack language evidence" in explanation for explanation in score.explanations)
+
+
+def test_partial_dictionary_evidence_is_ambiguous_not_hard_pruned():
+    record = TokenRecord(20, "theros", "theros")
+    config = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        symbol_presets={"json"},
+        wordfreq_languages=(),
+    )
+
+    score = score_token(record, config, dictionaries={"english": {"the", "her"}})
+
+    assert score.retain_score > 0
+    assert score.non_retain_score < 10
+    assert score.status == "ambiguous"
 
 
 def test_wordfreq_default_zipf_threshold_filters_weaker_matches():

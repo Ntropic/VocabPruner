@@ -1,0 +1,2 @@
+# Shell path, glob, redirection, quote, and command separators.
+-_./~$*?[]{}|&;<>`'"\!

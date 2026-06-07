@@ -11,6 +11,7 @@ from tokenpruner.symbols import char_matches_symbol_preset, matching_symbol_pres
 from tokenpruner.wordfreq_support import wordfreq_matches
 
 ESCAPE_RE = re.compile(r"""\\(?:[nrtbfav\\"']|x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})""")
+IDENTIFIER_PART_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]?[a-z]+|[A-Z]+")
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,8 @@ def score_token(record: TokenRecord, config: ScoreConfig, dictionaries: dict[str
     symbol_score = 0.0
     segments = token_segments(text)
     word_segments = language_word_segments(segments)
+    evidence_segments = language_evidence_segments(word_segments, dictionaries)
+    has_escape_segments = any(segment.escaped for segment in segments)
     has_symbol_evidence = bool(presets)
 
     if presets and (protected or not gate.blocked):
@@ -98,8 +101,8 @@ def score_token(record: TokenRecord, config: ScoreConfig, dictionaries: dict[str
     dictionary_score = 0.0
     wf_matches = []
     wordfreq_score = 0.0
-    if not protected and not gate.blocked and word_segments:
-        for segment in word_segments:
+    if not protected and not gate.blocked and evidence_segments:
+        for segment in evidence_segments:
             dict_matches.extend(dictionary_matches(segment.text, dictionaries))
         dictionary_score = min(4.0, sum(match.score for match in dict_matches[:5]))
     if dictionary_score:
@@ -107,8 +110,8 @@ def score_token(record: TokenRecord, config: ScoreConfig, dictionaries: dict[str
         top = ", ".join(f"{match.dictionary}:{match.term}/{match.mode}" for match in dict_matches[:3])
         explanations.append(f"dictionary evidence matched: {top}")
 
-    if not protected and not gate.blocked and word_segments:
-        for segment in word_segments:
+    if not protected and not gate.blocked and evidence_segments:
+        for segment in evidence_segments:
             wf_matches.extend(
                 wordfreq_matches(
                     segment.text,
@@ -125,13 +128,25 @@ def score_token(record: TokenRecord, config: ScoreConfig, dictionaries: dict[str
 
     if not protected and not gate.blocked:
         if word_segments:
-            missing = [segment.text for segment in word_segments if not has_language_evidence(segment.text, dict_matches, wf_matches)]
+            missing = [
+                segment.text
+                for segment in evidence_segments
+                if not has_language_evidence(segment.text, dict_matches, wf_matches)
+            ]
             if missing:
-                non_retain_score += 10.0
-                explanations.append(f"word segment(s) lack language evidence: {', '.join(missing[:5])}")
-        elif has_symbol_evidence:
+                if dict_matches or wf_matches:
+                    non_retain_score += min(3.0, max(2.0, float(len(missing))))
+                    explanations.append(f"some word segment(s) lack language evidence: {', '.join(missing[:5])}")
+                else:
+                    non_retain_score += 10.0
+                    explanations.append(f"word segment(s) lack language evidence: {', '.join(missing[:5])}")
+        elif has_symbol_evidence or has_escape_segments:
             retain_score += symbol_score
-            explanations.append("symbol-only token retained by selected symbol presets")
+            if has_escape_segments and not has_symbol_evidence:
+                retain_score += 1.25
+                explanations.append("escape sequence retained as structural syntax")
+            else:
+                explanations.append("symbol-only token retained by selected symbol presets")
         else:
             non_retain_score += 10.0
             explanations.append("no language word segments or selected symbol evidence")
@@ -236,6 +251,64 @@ def language_word_segments(segments: list[TokenSegment]) -> list[TokenSegment]:
     if all(len(segment.text) == 1 for segment in words):
         return []
     return [segment for segment in words if len(segment.text) > 1]
+
+
+def language_evidence_segments(
+    segments: list[TokenSegment],
+    dictionaries: dict[str, set[str]],
+) -> list[TokenSegment]:
+    expanded: list[TokenSegment] = []
+    terms = _dictionary_split_terms(dictionaries)
+    for segment in segments:
+        greedy_parts = _greedy_split(segment.text, terms)
+        if greedy_parts:
+            expanded.extend(TokenSegment(word, "word") for word in greedy_parts)
+            continue
+
+        parts = split_identifier_words(segment.text)
+        for part in parts:
+            greedy_parts = _greedy_split(part, terms)
+            if greedy_parts:
+                expanded.extend(TokenSegment(word, "word") for word in greedy_parts)
+            elif len(part) > 1:
+                expanded.append(TokenSegment(part, "word"))
+    return expanded
+
+
+def split_identifier_words(text: str) -> list[str]:
+    parts = IDENTIFIER_PART_RE.findall(text)
+    if not parts or "".join(parts) != text:
+        return [text]
+    return parts
+
+
+def greedy_dictionary_split(text: str, dictionaries: dict[str, set[str]]) -> list[str]:
+    return _greedy_split(text, _dictionary_split_terms(dictionaries))
+
+
+def _dictionary_split_terms(dictionaries: dict[str, set[str]]) -> list[str]:
+    return sorted(
+        {
+            term.lower()
+            for dictionary in dictionaries.values()
+            for term in dictionary
+            if len(term) > 1 and term.isalpha()
+        },
+        key=lambda term: (-len(term), term),
+    )
+
+
+def _greedy_split(text: str, terms: list[str]) -> list[str]:
+    normalized = text.lower()
+    parts: list[str] = []
+    index = 0
+    while index < len(normalized):
+        match = next((term for term in terms if normalized.startswith(term, index)), None)
+        if match is None:
+            return []
+        parts.append(match)
+        index += len(match)
+    return parts if len(parts) > 1 else []
 
 
 def is_word_char(char: str) -> bool:

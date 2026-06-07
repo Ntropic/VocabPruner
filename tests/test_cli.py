@@ -16,6 +16,33 @@ class TinyTokenizer:
         return values[token_ids[0]]
 
 
+class TinyConfig:
+    model_type = "tiny"
+
+    def to_dict(self):
+        return {
+            "model_type": "tiny",
+            "architectures": ["TinyForCausalLM"],
+            "vocab_size": 6,
+            "tie_word_embeddings": True,
+        }
+
+
+def test_inspect_reports_model_architecture(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(cli, "load_model_config", lambda *args, **kwargs: TinyConfig())
+
+    cli.main(["inspect", "--model", "tiny"])
+
+    output = capsys.readouterr().out
+    assert "Tokenizer Vocabulary" in output
+    assert "Model Architecture" in output
+    assert "MTP: no" in output
+    assert "root.vocab_size: 6" not in output
+    assert "- vocab_size: 6" in output
+    assert "- root: tied" in output
+
+
 def test_analyze_output_print_accepts_space_separated_lists(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
@@ -211,6 +238,87 @@ def test_analyze_show_json_outputs_jsonl(monkeypatch, capsys, tmp_path):
     assert "TokenPruner Sample Report" not in output
     assert '"token"' in output
     assert len(output.strip().splitlines()) == 2
+
+
+def test_normalize_show_examples_default_counts():
+    show, counts = cli.normalize_show_args([["examples"]])
+
+    assert show == ["examples"]
+    assert counts.retained == 5
+    assert counts.pruned == 5
+    assert counts.ambiguous == 5
+
+
+def test_normalize_show_examples_inline_count():
+    show, counts = cli.normalize_show_args([["examples:3"]])
+
+    assert show == ["examples"]
+    assert counts.retained == 3
+    assert counts.pruned == 3
+    assert counts.ambiguous == 3
+
+
+def test_normalize_show_examples_category_counts():
+    show, counts = cli.normalize_show_args([["stats", "examples:retained=2,pruned=4,ambiguous=1"]])
+
+    assert show == ["stats", "examples"]
+    assert counts.retained == 2
+    assert counts.pruned == 4
+    assert counts.ambiguous == 1
+
+
+def test_normalize_show_rejects_invalid_examples_specs():
+    cases = {
+        "examples:abc": "Invalid examples spec: examples:abc",
+        "examples:retained=-1": "Invalid examples count: -1",
+        "examples:unknown=3": "Invalid examples category: unknown",
+    }
+    for value, message in cases.items():
+        try:
+            cli.normalize_show_args([[value]])
+        except SystemExit as exc:
+            assert str(exc) == message
+        else:
+            raise AssertionError(f"Expected SystemExit for {value}")
+
+
+def test_analyze_show_examples_prints_decision_buckets(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+
+    cli.main(["analyze", "--model", "tiny", "--sample-size", "-1", "--show", "examples:2"])
+
+    output = capsys.readouterr().out
+    assert "Show mode: examples" in output
+    assert "Retained examples" in output
+    assert "Pruned examples" in output
+    assert "Ambiguous examples" in output
+    assert "Scores" not in output
+
+
+def test_analyze_show_stats_examples_prints_both(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+
+    cli.main(["analyze", "--model", "tiny", "--sample-size", "-1", "--show", "stats", "examples:2"])
+
+    output = capsys.readouterr().out
+    assert "Retained:" in output
+    assert "Retained examples" in output
+    assert "Show mode: stats examples" in output
+
+
+def test_analyze_help_does_not_list_example_count(capsys):
+    try:
+        cli.main(["analyze", "--help"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    else:
+        raise AssertionError("Expected SystemExit")
+
+    output = capsys.readouterr().out
+    assert "--example-count" not in output
+    assert "examples:retained=20,pruned=20,ambiguous=5" in output
 
 
 def test_analyze_save_writes_jsonl_file(monkeypatch, capsys, tmp_path):

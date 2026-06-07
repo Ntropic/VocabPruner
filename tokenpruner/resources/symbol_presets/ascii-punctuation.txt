@@ -1,0 +1,2 @@
+# ASCII punctuation characters.
+!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~

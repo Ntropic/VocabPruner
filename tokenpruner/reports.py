@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import json
+import random
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from tokenpruner.models import TokenScore
 from tokenpruner.vocab import TokenRecord, vocabulary_stats
 
-ShowOption = Literal["all", "ambiguous", "ambiguous-words", "stats", "json"]
+ShowOption = Literal["all", "ambiguous", "ambiguous-words", "examples", "stats", "json"]
 ShowOptions = ShowOption | list[ShowOption] | tuple[ShowOption, ...] | set[ShowOption]
+
+
+@dataclass(frozen=True)
+class ExampleCounts:
+    retained: int = 5
+    pruned: int = 5
+    ambiguous: int = 5
 
 
 def write_reports(
@@ -95,6 +104,7 @@ def render_plain_text(
     sample_size: int,
     seed: int,
     show: ShowOptions = ("all",),
+    example_counts: ExampleCounts = ExampleCounts(),
     style: Literal["plain", "rich"] = "plain",
 ) -> str:
     stats = vocabulary_stats(records)
@@ -108,6 +118,7 @@ def render_plain_text(
         f"Vocabulary size: {stats['vocab_size']}",
         f"Special tokens: {stats['special_tokens']}",
         f"Byte fallback tokens: {stats['byte_fallback_tokens']}",
+        "",
         f"Sample size: {_sample_size_label(sample_size)}",
         f"Classified tokens: {len(scores)}",
         f"Displayed tokens: {len(visible_scores)}",
@@ -122,6 +133,13 @@ def render_plain_text(
         parts.extend(["", "Scores", _plain_rows(sorted_scores, style=style)])
     if should_show_ambiguous_words(show):
         parts.extend(["", "Ambiguous words", _ambiguous_word_rows(filter_scores(scores, ["ambiguous"]))])
+    if should_show_examples(show):
+        examples = example_groups(scores, example_counts, seed=seed)
+        parts.extend(["", f"Retained examples ({len(examples['retained'])})", _plain_rows(examples["retained"], style=style)])
+        parts.extend(["", f"Pruned examples ({len(examples['pruned'])})", _plain_rows(examples["pruned"], style=style)])
+        parts.extend(
+            ["", f"Ambiguous examples ({len(examples['ambiguous'])})", _plain_rows(examples["ambiguous"], style=style)]
+        )
     return "\n".join(parts)
 
 
@@ -163,11 +181,15 @@ def should_show_ambiguous_words(show: ShowOptions) -> bool:
     return "ambiguous-words" in normalize_show_options(show)
 
 
+def should_show_examples(show: ShowOptions) -> bool:
+    return "examples" in normalize_show_options(show)
+
+
 def normalize_show_options(show: ShowOptions) -> set[ShowOption]:
     if isinstance(show, str):
         return {show}
     options = {option for option in show}
-    unknown = options - {"all", "ambiguous", "ambiguous-words", "stats", "json"}
+    unknown = options - {"all", "ambiguous", "ambiguous-words", "examples", "stats", "json"}
     if unknown:
         raise ValueError(f"Unsupported show options: {', '.join(sorted(unknown))}")
     return options
@@ -189,6 +211,29 @@ def is_ambiguous_score(score: TokenScore) -> bool:
     return (score.retain_score > 0 and score.non_retain_score > 0) or (
         score.retain_score == 0 and score.non_retain_score == 0
     )
+
+
+def example_groups(scores: list[TokenScore], counts: ExampleCounts, seed: int = 13) -> dict[str, list[TokenScore]]:
+    retained = [
+        score for score in scores if not is_ambiguous_score(score) and score.retain_score > score.non_retain_score
+    ]
+    pruned = [
+        score for score in scores if not is_ambiguous_score(score) and score.non_retain_score >= score.retain_score
+    ]
+    ambiguous = [score for score in scores if is_ambiguous_score(score)]
+    return {
+        "retained": _seeded_examples(retained, counts.retained, seed, "retained"),
+        "pruned": _seeded_examples(pruned, counts.pruned, seed, "pruned"),
+        "ambiguous": _seeded_examples(ambiguous, counts.ambiguous, seed, "ambiguous"),
+    }
+
+
+def _seeded_examples(scores: list[TokenScore], count: int, seed: int, bucket: str) -> list[TokenScore]:
+    if count <= 0 or not scores:
+        return []
+    selected = list(scores)
+    random.Random(f"{seed}:{bucket}").shuffle(selected)
+    return selected[:count]
 
 
 def _table(scores: list[TokenScore]) -> str:
@@ -265,4 +310,6 @@ def _sample_size_label(sample_size: int) -> str:
 
 def _show_label(show: ShowOptions) -> str:
     options = normalize_show_options(show)
-    return " ".join(option for option in ["stats", "all", "ambiguous", "ambiguous-words", "json"] if option in options)
+    return " ".join(
+        option for option in ["stats", "all", "ambiguous", "ambiguous-words", "examples", "json"] if option in options
+    )
