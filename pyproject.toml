@@ -15,6 +15,14 @@ dependencies = [
     "wordfreq>=3.1",
 ]
 
+[project.optional-dependencies]
+modelopt = [
+    "nvidia-modelopt>=0.37",
+]
+compressed-tensors = [
+    "compressed-tensors>=0.15",
+]
+
 [project.scripts]
 tokenpruner = "tokenpruner.cli:app"
 

@@ -13,7 +13,7 @@ BUILTIN_DICTIONARIES = {
     "icons": "icon_terms.txt",
 }
 
-MATCH_WEIGHTS = {
+MATCH_RANKS = {
     "exact": 2.5,
     "prefix": 1.4,
     "suffix": 1.2,
@@ -60,10 +60,9 @@ def dictionary_matches(text: str, dictionaries: dict[str, set[str]]) -> list[Dic
                         dictionary=dictionary,
                         term=term,
                         mode=mode,
-                        score=MATCH_WEIGHTS[mode],
                     )
                 )
-    return sorted(matches, key=lambda match: match.score, reverse=True)
+    return sorted(matches, key=lambda match: MATCH_RANKS[match.mode], reverse=True)
 
 
 def normalize_token_text(text: str) -> str:

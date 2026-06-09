@@ -35,9 +35,13 @@ def score_sample(
         return [score_token(record, config, dictionaries=dictionaries) for record in iterable]
 
     tasks = [(record, config, dictionaries) for record in sampled]
-    with ProcessPoolExecutor(max_workers=workers) as executor:
-        mapped = executor.map(_score_token_process, tasks)
-        return list(_progress(mapped, progress=progress, total=len(tasks)))
+    try:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            mapped = executor.map(_score_token_process, tasks)
+            return list(_progress(mapped, progress=progress, total=len(tasks)))
+    except PermissionError:
+        iterable = _progress(sampled, progress=progress, total=len(sampled))
+        return [score_token(record, config, dictionaries=dictionaries) for record in iterable]
 
 
 def _score_token_process(task: tuple[TokenRecord, ScoreConfig, dict[str, set[str]]]) -> TokenScore:
@@ -52,4 +56,4 @@ def _progress(iterable, progress: bool, total: int):
         from tqdm import tqdm
     except ImportError:
         return iterable
-    return tqdm(iterable, total=total, desc="Scoring tokens", unit="tok")
+    return tqdm(iterable, total=total, desc="Classifying tokens", unit="tok")

@@ -1,6 +1,14 @@
 from pathlib import Path
 
+import pytest
+
 import tokenpruner.cli as cli
+
+
+@pytest.fixture(autouse=True)
+def allow_pruning_runtime(monkeypatch):
+    monkeypatch.setattr(cli, "missing_pruning_packages", lambda report: ())
+    monkeypatch.setattr(cli, "validate_pruning_runtime", lambda report: None)
 
 
 class TinyTokenizer:
@@ -89,7 +97,7 @@ def test_default_workers_has_minimum_one(monkeypatch):
     assert cli.default_workers() == 1
 
 
-def test_analyze_default_sample_size_scores_all(monkeypatch, capsys, tmp_path):
+def test_analyze_default_sample_size_classifies_all(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
@@ -111,36 +119,6 @@ def test_analyze_rejects_invalid_sample_size(monkeypatch):
         raise AssertionError("Expected SystemExit")
 
 
-def test_analyze_show_ambiguous_filters_print_rows(monkeypatch, capsys, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
-
-    cli.main(
-        [
-            "analyze",
-            "--model",
-            "tiny",
-            "--keep-script",
-            "Latin",
-            "Common",
-            "Inherited",
-            "--wordfreq-lang",
-            "en",
-            "--symbol-preset",
-            "mathematics",
-            "--sample-size",
-            "-1",
-            "--show",
-            "ambiguous",
-        ]
-    )
-
-    output = capsys.readouterr().out
-    assert "Displayed tokens:" in output
-    assert "No samples." in output
-    assert "'hello'" not in output
-
-
 def test_analyze_show_stats_prints_stats_only(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
@@ -150,32 +128,7 @@ def test_analyze_show_stats_prints_stats_only(monkeypatch, capsys, tmp_path):
     output = capsys.readouterr().out
     assert "Retained:" in output
     assert "Pruned:" in output
-    assert "Ambiguous:" in output
-    assert "Scores" not in output
-    assert "'hello'" not in output
-
-
-def test_analyze_show_stats_ambiguous_prints_stats_and_ambiguous_rows(monkeypatch, capsys, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
-
-    cli.main(
-        [
-            "analyze",
-            "--model",
-            "tiny",
-            "--sample-size",
-            "-1",
-            "--show",
-            "stats",
-            "ambiguous",
-        ]
-    )
-
-    output = capsys.readouterr().out
-    assert "Retained:" in output
-    assert "Scores" in output
-    assert "No samples." in output
+    assert "Decisions" not in output
     assert "'hello'" not in output
 
 
@@ -193,38 +146,23 @@ def test_analyze_show_can_be_repeated(monkeypatch, capsys, tmp_path):
             "--show",
             "stats",
             "--show",
-            "ambiguous",
+            "examples:1",
         ]
     )
 
     output = capsys.readouterr().out
-    assert "Show mode: stats ambiguous" in output
-    assert "Scores" in output
-    assert "No samples." in output
-    assert "'hello'" not in output
+    assert "Show mode: stats examples" in output
+    assert "Retained examples" in output
 
 
-def test_analyze_show_ambiguous_words_prints_decoded_and_raw_only(monkeypatch, capsys, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
-
-    cli.main(["analyze", "--model", "tiny", "--sample-size", "-1", "--show", "ambiguous-words"])
-
-    output = capsys.readouterr().out
-    assert "Ambiguous words" in output
-    assert "No samples." in output
-    assert "score=" not in output
-    assert "Scores" not in output
-
-
-def test_analyze_show_all_prints_non_ambiguous_rows(monkeypatch, capsys, tmp_path):
+def test_analyze_show_all_prints_rows(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(["analyze", "--model", "tiny", "--sample-size", "-1", "--show", "all"])
 
     output = capsys.readouterr().out
-    assert "Scores" in output
+    assert "Decisions" in output
     assert "'hello'" in output
 
 
@@ -246,7 +184,6 @@ def test_normalize_show_examples_default_counts():
     assert show == ["examples"]
     assert counts.retained == 5
     assert counts.pruned == 5
-    assert counts.ambiguous == 5
 
 
 def test_normalize_show_examples_inline_count():
@@ -255,16 +192,14 @@ def test_normalize_show_examples_inline_count():
     assert show == ["examples"]
     assert counts.retained == 3
     assert counts.pruned == 3
-    assert counts.ambiguous == 3
 
 
 def test_normalize_show_examples_category_counts():
-    show, counts = cli.normalize_show_args([["stats", "examples:retained=2,pruned=4,ambiguous=1"]])
+    show, counts = cli.normalize_show_args([["stats", "examples:retained=2,pruned=4"]])
 
     assert show == ["stats", "examples"]
     assert counts.retained == 2
     assert counts.pruned == 4
-    assert counts.ambiguous == 1
 
 
 def test_normalize_show_rejects_invalid_examples_specs():
@@ -292,8 +227,7 @@ def test_analyze_show_examples_prints_decision_buckets(monkeypatch, capsys, tmp_
     assert "Show mode: examples" in output
     assert "Retained examples" in output
     assert "Pruned examples" in output
-    assert "Ambiguous examples" in output
-    assert "Scores" not in output
+    assert "Decisions" not in output
 
 
 def test_analyze_show_stats_examples_prints_both(monkeypatch, capsys, tmp_path):
@@ -318,7 +252,7 @@ def test_analyze_help_does_not_list_example_count(capsys):
 
     output = capsys.readouterr().out
     assert "--example-count" not in output
-    assert "examples:retained=20,pruned=20,ambiguous=5" in output
+    assert "examples:retained=20,pruned=20" in output
 
 
 def test_analyze_save_writes_jsonl_file(monkeypatch, capsys, tmp_path):
@@ -337,12 +271,12 @@ def test_analyze_save_writes_jsonl_file(monkeypatch, capsys, tmp_path):
             "--show",
             "stats",
             "--save",
-            "scores.jsonl",
+            "decisions.jsonl",
         ]
     )
 
     output = capsys.readouterr().out
-    saved = Path("scores.jsonl").read_text(encoding="utf-8")
+    saved = Path("decisions.jsonl").read_text(encoding="utf-8")
     assert "Retained:" in output
     assert '"token"' not in output
     assert len(saved.strip().splitlines()) == 2
@@ -364,39 +298,289 @@ def test_analyze_save_with_json_writes_visible_rows(monkeypatch, capsys, tmp_pat
             "--show",
             "json",
             "--save",
-            "nested/scores.jsonl",
+            "nested/decisions.jsonl",
         ]
     )
 
     output = capsys.readouterr().out
-    saved = Path("nested/scores.jsonl").read_text(encoding="utf-8")
+    saved = Path("nested/decisions.jsonl").read_text(encoding="utf-8")
     assert '"token"' in output
     assert len(saved.strip().splitlines()) == 2
 
 
-def test_analyze_save_with_ambiguous_saves_ambiguous_json_rows(monkeypatch, capsys, tmp_path):
+def test_list_command_writes_token_artifacts(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(
         [
-            "analyze",
+            "list",
             "--model",
             "tiny",
-            "--sample-size",
-            "-1",
-            "--show",
-            "stats",
-            "ambiguous",
-            "--save",
-            "ambiguous.jsonl",
+            "--output",
+            "lists",
+            "--wordfreq-lang",
+            "en",
+            "--workers",
+            "1",
         ]
     )
 
-    capsys.readouterr()
-    saved = Path("ambiguous.jsonl").read_text(encoding="utf-8")
-    assert "'hello'" not in saved
-    assert saved == ""
+    output = capsys.readouterr().out
+    assert "TokenPruner Token Lists" in output
+    assert Path("lists/retained_token_ids.txt").exists()
+    assert Path("lists/pruned_token_ids.txt").exists()
+    assert Path("lists/token_decisions.jsonl").exists()
+    assert Path("lists/policy.json").exists()
+
+
+def test_prune_refuses_separate_smaller_vocabulary_before_loading_weights(monkeypatch, tmp_path):
+    class MultiVocabConfig:
+        model_type = "tiny_multi_vocab"
+
+        def to_dict(self):
+            return {
+                "model_type": "tiny_multi_vocab",
+                "vocab_size": 6,
+                "talker_config": {"vocab_size": 4},
+            }
+
+    retained = tmp_path / "retained_token_ids.txt"
+    retained.write_text("0\n1\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(cli, "load_model_config", lambda *args, **kwargs: MultiVocabConfig())
+
+    def fail_load(*args, **kwargs):
+        raise AssertionError("weights should not be loaded for refused architectures")
+
+    monkeypatch.setattr(cli, "load_causal_lm", fail_load)
+
+    try:
+        cli.main(
+            [
+                "prune",
+                "--model",
+                "tiny",
+                "--output",
+                str(tmp_path / "out"),
+                "--retained-token-ids",
+                str(retained),
+                "--workers",
+                "1",
+            ]
+        )
+    except SystemExit as exc:
+        assert "separate token mapping" in str(exc)
+    else:
+        raise AssertionError("Expected SystemExit")
+
+
+def test_prune_confirmation_decline_avoids_loading_weights(monkeypatch, capsys, tmp_path):
+    retained = tmp_path / "retained_token_ids.txt"
+    retained.write_text("0\n1\n3\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(cli, "load_model_config", lambda *args, **kwargs: TinyConfig())
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+
+    def fail_load(*args, **kwargs):
+        raise AssertionError("weights should not be loaded after declining")
+
+    monkeypatch.setattr(cli, "load_causal_lm", fail_load)
+
+    cli.main(
+        [
+            "prune",
+            "--model",
+            "tiny",
+            "--output",
+            str(tmp_path / "out"),
+            "--retained-token-ids",
+            str(retained),
+            "--workers",
+            "1",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "TokenPruner Pruning Preview" in output
+    assert "Pruned vocab size: 3 (50.00%)" in output
+    assert "Pruning cancelled." in output
+
+
+def test_prune_defaults_to_summary_and_can_show_examples(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(cli, "load_model_config", lambda *args, **kwargs: TinyConfig())
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+
+    def fail_load(*args, **kwargs):
+        raise AssertionError("weights should not be loaded after declining")
+
+    monkeypatch.setattr(cli, "load_causal_lm", fail_load)
+
+    cli.main(
+        [
+            "prune",
+            "--model",
+            "tiny",
+            "--output",
+            str(tmp_path / "out"),
+            "--workers",
+            "1",
+            "--show",
+            "examples:1",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "TokenPruner Pruning Preview" in output
+    assert "TokenPruner Sample Report" in output
+    assert "Show mode: examples" in output
+    assert "Retained examples" in output
+    assert "Pruned examples" in output
+    assert "Pruning cancelled." in output
+
+
+def test_prune_default_show_is_stats(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(cli, "load_model_config", lambda *args, **kwargs: TinyConfig())
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    monkeypatch.setattr(
+        cli,
+        "load_causal_lm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("weights should not load")),
+    )
+
+    cli.main(
+        [
+            "prune",
+            "--model",
+            "tiny",
+            "--output",
+            str(tmp_path / "out"),
+            "--workers",
+            "1",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "Show mode: stats" in output
+    assert "Retained examples" not in output
+
+
+def test_prune_retained_list_rejects_example_output(monkeypatch, tmp_path):
+    retained = tmp_path / "retained_token_ids.txt"
+    retained.write_text("0\n1\n3\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+
+    try:
+        cli.main(
+            [
+                "prune",
+                "--model",
+                "tiny",
+                "--output",
+                str(tmp_path / "out"),
+                "--retained-token-ids",
+                str(retained),
+                "--show",
+                "examples",
+                "--workers",
+                "1",
+            ]
+        )
+    except SystemExit as exc:
+        assert "requires full classification" in str(exc)
+    else:
+        raise AssertionError("Expected SystemExit")
+
+
+def test_prune_yes_skips_confirmation(monkeypatch, capsys, tmp_path):
+    from tokenpruner.pruning import PruneResult
+
+    retained = tmp_path / "retained_token_ids.txt"
+    retained.write_text("0\n1\n3\n", encoding="utf-8")
+    output_dir = tmp_path / "out"
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(cli, "load_model_config", lambda *args, **kwargs: TinyConfig())
+    monkeypatch.setattr(cli, "load_causal_lm", lambda *args, **kwargs: object())
+    monkeypatch.setattr("builtins.input", lambda prompt: (_ for _ in ()).throw(AssertionError("input should not run")))
+    monkeypatch.setattr(
+        cli,
+        "prune_model_and_tokenizer",
+        lambda **kwargs: PruneResult(output_dir, 3, 3, {0: 0, 1: 1, 3: 2}, {0: 0, 1: 1, 2: 3}),
+    )
+
+    cli.main(
+        [
+            "prune",
+            "--model",
+            "tiny",
+            "--output",
+            str(output_dir),
+            "--retained-token-ids",
+            str(retained),
+            "--workers",
+            "1",
+            "--yes",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "TokenPruner Pruning Preview" in output
+    assert "TokenPruner Prune" in output
+
+
+def test_confirm_pruning_accepts_only_explicit_yes(monkeypatch):
+    for answer in ("y", "Y", "yes", " YES "):
+        monkeypatch.setattr("builtins.input", lambda prompt, answer=answer: answer)
+        assert cli.confirm_pruning() is True
+    for answer in ("", "n", "no", "maybe"):
+        monkeypatch.setattr("builtins.input", lambda prompt, answer=answer: answer)
+        assert cli.confirm_pruning() is False
+
+
+def test_ensure_pruning_runtime_offers_and_installs_missing_packages(monkeypatch, capsys):
+    calls = []
+    checks = iter([("torch", "nvidia-modelopt"), ()])
+    monkeypatch.setattr(cli, "missing_pruning_packages", lambda report: next(checks))
+    monkeypatch.setattr(cli, "validate_pruning_runtime", lambda report: None)
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+    monkeypatch.setattr(cli.subprocess, "run", lambda command, check: calls.append((command, check)))
+
+    cli.ensure_pruning_runtime(object())
+
+    output = capsys.readouterr().out
+    assert "Missing packages" in output
+    assert "python" in output.lower()
+    assert calls == [([cli.sys.executable, "-m", "pip", "install", "torch", "nvidia-modelopt"], True)]
+
+
+def test_ensure_pruning_runtime_decline_does_not_install(monkeypatch):
+    monkeypatch.setattr(cli, "missing_pruning_packages", lambda report: ("torch",))
+    monkeypatch.setattr("builtins.input", lambda prompt: "n")
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("pip should not run")),
+    )
+
+    with pytest.raises(SystemExit, match="were not installed"):
+        cli.ensure_pruning_runtime(object())
+
+
+def test_ensure_pruning_runtime_yes_skips_install_prompt(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli, "missing_pruning_packages", lambda report: ("compressed-tensors",))
+    monkeypatch.setattr(cli, "validate_pruning_runtime", lambda report: None)
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt: (_ for _ in ()).throw(AssertionError("input should not run")),
+    )
+    monkeypatch.setattr(cli.subprocess, "run", lambda command, check: calls.append(command))
+
+    cli.ensure_pruning_runtime(object(), assume_yes=True)
+
+    assert calls == [[cli.sys.executable, "-m", "pip", "install", "compressed-tensors"]]
 
 
 def test_analyze_rejects_output_argument(monkeypatch):

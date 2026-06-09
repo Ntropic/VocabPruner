@@ -41,17 +41,15 @@ def wordfreq_matches(
             matches.append(_match(language, token, word, mode, word_frequency))
             if len(matches) >= 20:
                 break
-    return sorted(matches, key=lambda match: match.score, reverse=True)
+    return sorted(matches, key=lambda match: match.frequency, reverse=True)
 
 
 def _match(language: str, token: str, term: str, mode: str, frequency: float) -> WordfreqMatch:
-    weight = {"exact": 1.2, "subword": 0.55, "prefix": 0.75, "suffix": 0.65}[mode]
     return WordfreqMatch(
         language=language,
         term=term,
         mode=mode,
         frequency=frequency,
-        score=max(0.0, min(2.0, frequency / 4.0 * weight)),
     )
 
 

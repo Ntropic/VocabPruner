@@ -12,13 +12,12 @@ def test_special_and_byte_fallback_are_protected():
     assert score_token(byte, config).status == "protected"
 
 
-def test_script_preselection_scores_non_retained_script():
+def test_script_preselection_prunes_non_retained_script():
     record = TokenRecord(2, "Ж", "Ж")
     config = ScoreConfig(keep_scripts={"Latin", "Common", "Inherited"}, drop_scripts={"Cyrillic"}, wordfreq_languages=())
 
     score = score_token(record, config)
 
-    assert score.non_retain_score > score.retain_score
     assert score.status == "non_retain_candidate"
 
 
@@ -32,9 +31,6 @@ def test_disallowed_script_skips_wordfreq_and_dominates_punctuation():
 
     score = score_token(record, config)
 
-    assert score.non_retain_score >= 100
-    assert score.retain_score == 0
-    assert score.wordfreq_score == 0
     assert score.status == "non_retain_candidate"
     assert any("character gate blocked" in explanation for explanation in score.explanations)
 
@@ -49,8 +45,6 @@ def test_unknown_latin_word_prunes_without_language_evidence():
 
     score = score_token(record, config, dictionaries={})
 
-    assert score.retain_score == 0
-    assert score.non_retain_score > 0
     assert score.status == "non_retain_candidate"
     assert any("lack language evidence" in explanation for explanation in score.explanations)
 
@@ -70,7 +64,7 @@ def test_unknown_latin_word_does_not_match_json_literal_letters():
     assert score.status == "non_retain_candidate"
 
 
-def test_known_word_plus_symbol_retains():
+def test_known_word_plus_symbol_retains_with_wordfreq_evidence():
     record = TokenRecord(10, "hello,", "hello,")
     config = ScoreConfig(
         keep_scripts={"Latin", "Common", "Inherited"},
@@ -81,8 +75,8 @@ def test_known_word_plus_symbol_retains():
 
     score = score_token(record, config, dictionaries={})
 
-    assert score.retain_score > score.non_retain_score
-    assert score.wordfreq_score > 0
+    assert score.status == "retain_candidate"
+    assert score.wordfreq_matches
 
 
 def test_symbol_only_token_retains_with_selected_preset():
@@ -95,7 +89,6 @@ def test_symbol_only_token_retains_with_selected_preset():
 
     score = score_token(record, config, dictionaries={})
 
-    assert score.retain_score > 0
     assert score.status == "retain_candidate"
 
 
@@ -109,7 +102,6 @@ def test_greek_math_letters_retain_with_mathematics_preset():
 
     score = score_token(record, config, dictionaries={})
 
-    assert score.retain_score > 0
     assert score.status == "retain_candidate"
 
 
@@ -123,7 +115,6 @@ def test_greek_text_still_prunes_without_greek_script():
 
     score = score_token(record, config, dictionaries={})
 
-    assert score.non_retain_score > score.retain_score
     assert score.status == "non_retain_candidate"
 
 
@@ -137,8 +128,7 @@ def test_single_letters_separated_by_symbols_do_not_need_language_evidence():
 
     score = score_token(record, config, dictionaries={})
 
-    assert score.retain_score > 0
-    assert score.non_retain_score == 0
+    assert score.status == "retain_candidate"
 
 
 def test_multi_letter_segments_separated_by_symbols_need_language_evidence():
@@ -151,7 +141,7 @@ def test_multi_letter_segments_separated_by_symbols_need_language_evidence():
 
     score = score_token(record, config, dictionaries={})
 
-    assert score.non_retain_score > score.retain_score
+    assert score.status == "non_retain_candidate"
     assert any("ab" in explanation and "cd" in explanation for explanation in score.explanations)
 
 
@@ -165,8 +155,7 @@ def test_escaped_sequences_do_not_require_language_evidence():
 
     score = score_token(record, config, dictionaries={})
 
-    assert score.retain_score > 0
-    assert score.non_retain_score == 0
+    assert score.status == "retain_candidate"
 
 
 def test_unicode_escape_sequence_is_structural_without_symbol_preset():
@@ -179,8 +168,7 @@ def test_unicode_escape_sequence_is_structural_without_symbol_preset():
 
     score = score_token(record, config, dictionaries={})
 
-    assert score.retain_score > 0
-    assert score.non_retain_score == 0
+    assert score.status == "retain_candidate"
     assert any("escape sequence" in explanation for explanation in score.explanations)
 
 
@@ -200,17 +188,15 @@ def test_emoji_requires_selected_symbol_preset():
 
     score = score_token(record, config)
 
-    assert score.non_retain_score >= 100
-    assert score.retain_score == 0
+    assert score.status == "non_retain_candidate"
 
 
-def test_dictionary_subword_score_counts_for_hello():
+def test_dictionary_subword_match_counts_for_hello():
     record = TokenRecord(3, "he", "he")
     config = ScoreConfig(wordfreq_languages=())
 
     score = score_token(record, config, dictionaries={"english": {"hello"}})
 
-    assert score.dictionary_score > 0
     assert any(match.term == "hello" and match.mode == "subword" for match in score.dictionary_matches)
 
 
@@ -224,7 +210,6 @@ def test_camel_case_identifier_parts_count_as_language_evidence():
 
     score = score_token(record, config, dictionaries={"programming": {"class", "call", "check"}})
 
-    assert score.retain_score > score.non_retain_score
     assert score.status == "retain_candidate"
     assert any(match.term == "class" and match.mode == "exact" for match in score.dictionary_matches)
     assert not any("lack language evidence" in explanation for explanation in score.explanations)
@@ -289,7 +274,7 @@ def test_capitalization_boundaries_can_rescue_a_failed_greedy_split():
     assert not any("lack language evidence" in explanation for explanation in score.explanations)
 
 
-def test_partial_dictionary_evidence_is_ambiguous_not_hard_pruned():
+def test_partial_dictionary_evidence_does_not_override_tree_pruning():
     record = TokenRecord(20, "theros", "theros")
     config = ScoreConfig(
         keep_scripts={"Latin", "Common", "Inherited"},
@@ -299,9 +284,8 @@ def test_partial_dictionary_evidence_is_ambiguous_not_hard_pruned():
 
     score = score_token(record, config, dictionaries={"english": {"the", "her"}})
 
-    assert score.retain_score > 0
-    assert score.non_retain_score < 10
-    assert score.status == "ambiguous"
+    assert score.status == "non_retain_candidate"
+    assert any("decision tree: prune" in explanation for explanation in score.explanations)
 
 
 def test_wordfreq_default_zipf_threshold_filters_weaker_matches():
@@ -310,7 +294,6 @@ def test_wordfreq_default_zipf_threshold_filters_weaker_matches():
 
     score = score_token(record, config, dictionaries={})
 
-    assert score.wordfreq_score == 0
     assert score.wordfreq_matches == []
 
 
@@ -324,7 +307,7 @@ def test_wordfreq_lower_zipf_threshold_allows_weaker_matches():
 
     score = score_token(record, config, dictionaries={})
 
-    assert score.wordfreq_score > 0
+    assert score.wordfreq_matches
 
 
 def test_wordfreq_threshold_changes_known_word_retention():

@@ -59,70 +59,59 @@ def score_token(record: TokenRecord, config: ScoreConfig, dictionaries: dict[str
         list(config.builtin_dictionaries) if config.builtin_dictionaries is not None else None,
     )
 
-    retain_score = 0.0
-    non_retain_score = 0.0
     explanations: list[str] = []
 
     structural = is_structural_token(text)
     protected = record.is_special or record.is_byte_fallback or structural
     if record.is_special:
-        retain_score += 100.0
         explanations.append("special token is always preserved")
     if record.is_byte_fallback:
-        retain_score += 100.0
         explanations.append("byte fallback token is always preserved")
     if structural:
-        retain_score += 100.0
         explanations.append("decoded whitespace/control token is always preserved")
 
+    segments = token_segments(text)
     presets = matching_symbol_presets(text, config.symbol_presets)
-    gate = character_gate(text, config)
+    gate = character_gate(text, config, segments)
 
     if not protected and gate.blocked:
-        non_retain_score += 100.0
         explanations.append(f"character gate blocked disallowed character families: {', '.join(gate.blocked)}")
     elif not protected:
-        explanations.append("character gate passed; language scoring enabled")
+        explanations.append("character gate passed")
 
-    symbol_score = 0.0
-    segments = token_segments(text)
     word_segments = language_word_segments(segments)
     evidence_segments = language_evidence_segments(word_segments, dictionaries)
     has_escape_segments = any(segment.escaped for segment in segments)
     has_symbol_evidence = bool(presets)
 
     if presets and (protected or not gate.blocked):
-        symbol_score = 1.25 * len(set(presets))
-        if protected or not word_segments:
-            retain_score += symbol_score
         explanations.append(f"symbol/icon presets matched: {', '.join(sorted(set(presets)))}")
 
     dict_matches = []
-    dictionary_score = 0.0
     wf_matches = []
-    wordfreq_score = 0.0
+    segment_evidence: list[tuple[TokenSegment, bool]] = []
     if not protected and not gate.blocked and evidence_segments:
         for segment in evidence_segments:
-            dict_matches.extend(dictionary_matches(segment.text, dictionaries))
-        dictionary_score = min(4.0, sum(match.score for match in dict_matches[:5]))
-    if dictionary_score:
-        retain_score += dictionary_score
+            segment_dict_matches = dictionary_matches(segment.text, dictionaries)
+            segment_wf_matches = wordfreq_matches(
+                segment.text,
+                list(config.wordfreq_languages),
+                min_zipf=config.wordfreq_min_zipf,
+                top_pct=config.wordfreq_top_pct,
+            )
+            dict_matches.extend(segment_dict_matches)
+            wf_matches.extend(segment_wf_matches)
+            segment_evidence.append(
+                (
+                    segment,
+                    has_language_evidence(segment.text, segment_dict_matches, segment_wf_matches),
+                )
+            )
+    if dict_matches:
         top = ", ".join(f"{match.dictionary}:{match.term}/{match.mode}" for match in dict_matches[:3])
         explanations.append(f"dictionary evidence matched: {top}")
 
-    if not protected and not gate.blocked and evidence_segments:
-        for segment in evidence_segments:
-            wf_matches.extend(
-                wordfreq_matches(
-                    segment.text,
-                    list(config.wordfreq_languages),
-                    min_zipf=config.wordfreq_min_zipf,
-                    top_pct=config.wordfreq_top_pct,
-                )
-            )
-        wordfreq_score = min(3.0, sum(match.score for match in wf_matches[:5]))
-    if wordfreq_score:
-        retain_score += wordfreq_score
+    if wf_matches:
         top = ", ".join(f"{match.language}:{match.term}/{match.mode}" for match in wf_matches[:3])
         explanations.append(f"wordfreq evidence matched: {top}")
 
@@ -130,39 +119,33 @@ def score_token(record: TokenRecord, config: ScoreConfig, dictionaries: dict[str
         if word_segments:
             missing = [
                 segment.text
-                for segment in evidence_segments
-                if not has_language_evidence(segment.text, dict_matches, wf_matches)
+                for segment, accepted in segment_evidence
+                if not accepted
             ]
             if missing:
-                if dict_matches or wf_matches:
-                    non_retain_score += min(3.0, max(2.0, float(len(missing))))
-                    explanations.append(f"some word segment(s) lack language evidence: {', '.join(missing[:5])}")
-                else:
-                    non_retain_score += 10.0
-                    explanations.append(f"word segment(s) lack language evidence: {', '.join(missing[:5])}")
+                explanations.append(f"word segment(s) lack language evidence: {', '.join(missing[:5])}")
         elif has_symbol_evidence or has_escape_segments:
-            retain_score += symbol_score
             if has_escape_segments and not has_symbol_evidence:
-                retain_score += 1.25
                 explanations.append("escape sequence retained as structural syntax")
             else:
                 explanations.append("symbol-only token retained by selected symbol presets")
         else:
-            non_retain_score += 10.0
             explanations.append("no language word segments or selected symbol evidence")
 
-    status = classify_status(retain_score, non_retain_score, protected)
+    all_words_accepted = bool(segment_evidence) and all(accepted for _, accepted in segment_evidence)
+    status = decision_tree_status(
+        protected=protected,
+        gate_blocked=bool(gate.blocked),
+        has_word_segments=bool(word_segments),
+        all_words_accepted=all_words_accepted,
+    )
+    explanations.append(_decision_explanation(status, protected, gate, word_segments, all_words_accepted))
     if not explanations:
         explanations.append("no strong retained or non-retained evidence found")
 
     return TokenScore(
         token=record,
         script_profile=profile,
-        retain_score=retain_score,
-        non_retain_score=non_retain_score,
-        symbol_score=symbol_score,
-        dictionary_score=dictionary_score,
-        wordfreq_score=wordfreq_score,
         protected=protected,
         status=status,
         symbol_presets=sorted(set(presets)),
@@ -172,14 +155,40 @@ def score_token(record: TokenRecord, config: ScoreConfig, dictionaries: dict[str
     )
 
 
-def classify_status(retain_score: float, non_retain_score: float, protected: bool) -> str:
+def decision_tree_status(
+    *,
+    protected: bool,
+    gate_blocked: bool,
+    has_word_segments: bool,
+    all_words_accepted: bool,
+) -> str:
     if protected:
         return "protected"
-    if abs(retain_score - non_retain_score) <= 0.75:
-        return "ambiguous"
-    if retain_score > non_retain_score:
+    if gate_blocked:
+        return "non_retain_candidate"
+    if not has_word_segments:
+        return "retain_candidate"
+    if all_words_accepted:
         return "retain_candidate"
     return "non_retain_candidate"
+
+
+def _decision_explanation(
+    status: str,
+    protected: bool,
+    gate: CharacterGate,
+    word_segments: list[TokenSegment],
+    all_words_accepted: bool,
+) -> str:
+    if protected:
+        return "decision tree: accept protected token"
+    if gate.blocked:
+        return "decision tree: prune because the character gate failed"
+    if not word_segments:
+        return "decision tree: accept allowed symbol, escape, or short-fragment token"
+    if all_words_accepted:
+        return "decision tree: accept because every word segment was accepted"
+    return "decision tree: prune because at least one word segment was not accepted"
 
 
 @dataclass(frozen=True)
@@ -187,22 +196,29 @@ class CharacterGate:
     blocked: tuple[str, ...] = ()
 
 
-def character_gate(text: str, config: ScoreConfig) -> CharacterGate:
+def character_gate(
+    text: str,
+    config: ScoreConfig,
+    segments: list[TokenSegment] | None = None,
+) -> CharacterGate:
     blocked: set[str] = set()
-    for char in text:
-        if char.isspace() or is_control_char(char):
+    for segment in segments if segments is not None else token_segments(text):
+        if segment.escaped:
             continue
-        script = script_for_char(char)
-        if char_matches_symbol_preset(char, config.symbol_presets):
-            continue
-        if script == "Common" and unicodedata.category(char)[0] in {"P", "S"}:
-            blocked.add("Common-symbol")
-            continue
-        if script in config.drop_scripts:
-            blocked.add(script)
-            continue
-        if script not in config.keep_scripts:
-            blocked.add(script)
+        for char in segment.text:
+            if char.isspace() or is_control_char(char):
+                continue
+            script = script_for_char(char)
+            if char_matches_symbol_preset(char, config.symbol_presets):
+                continue
+            if script == "Common" and unicodedata.category(char)[0] in {"P", "S"}:
+                blocked.add("Common-symbol")
+                continue
+            if script in config.drop_scripts:
+                blocked.add(script)
+                continue
+            if script not in config.keep_scripts:
+                blocked.add(script)
     return CharacterGate(tuple(sorted(blocked)))
 
 

@@ -13,6 +13,8 @@ class ModelArchitectureReport:
     mtp_settings: tuple[tuple[str, Any], ...]
     mtp_head_status: str
     embedding_ties: tuple[tuple[str, bool], ...]
+    mtp_dedicated_embeddings: bool | None
+    quantization_method: str | None
 
     @property
     def has_mtp(self) -> bool:
@@ -52,6 +54,22 @@ def inspect_model_architecture(config: Any) -> ModelArchitectureReport:
         for path, value in flattened
         if path.split(".")[-1] == "tie_word_embeddings" and isinstance(value, bool)
     )
+    mtp_dedicated_embeddings = next(
+        (
+            bool(value)
+            for path, value in flattened
+            if path.split(".")[-1] == "mtp_use_dedicated_embeddings" and isinstance(value, bool)
+        ),
+        None,
+    )
+    quantization_method = next(
+        (
+            str(value)
+            for path, value in flattened
+            if path == "quantization_config.quant_method"
+        ),
+        None,
+    )
 
     mtp_head_declared = any(
         _is_mtp_path(path)
@@ -81,6 +99,8 @@ def inspect_model_architecture(config: Any) -> ModelArchitectureReport:
         mtp_settings=mtp_settings,
         mtp_head_status=mtp_head_status,
         embedding_ties=embedding_ties,
+        mtp_dedicated_embeddings=mtp_dedicated_embeddings,
+        quantization_method=quantization_method,
     )
 
 
@@ -91,6 +111,15 @@ def render_model_architecture(report: ModelArchitectureReport) -> str:
         f"Architectures: {', '.join(report.architectures) if report.architectures else 'not declared'}",
         f"MTP: {'yes' if report.has_mtp else 'no'}",
         f"Separate MTP LM Head: {report.mtp_head_status}",
+        "MTP Embeddings: "
+        + (
+            "dedicated"
+            if report.mtp_dedicated_embeddings is True
+            else "shared"
+            if report.mtp_dedicated_embeddings is False
+            else "not declared"
+        ),
+        f"Quantization: {report.quantization_method or 'none declared'}",
     ]
     if report.mtp_settings:
         lines.append("MTP Settings:")
@@ -130,8 +159,9 @@ def _flatten(value: Any, prefix: str = ""):
 def _encoder_paths(data: dict[str, Any], prefix: str = "") -> set[str]:
     encoders: set[str] = set()
     for key, value in data.items():
-        path = f"{prefix}.{key}" if prefix else key
-        lowered = key.lower()
+        key_text = str(key)
+        path = f"{prefix}.{key_text}" if prefix else key_text
+        lowered = key_text.lower()
         if isinstance(value, dict):
             if any(marker in lowered for marker in ("encoder", "vision", "visual", "audio", "speech", "image", "video")):
                 encoders.add(path)

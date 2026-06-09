@@ -45,7 +45,6 @@ class DictionaryMatch:
     dictionary: str
     term: str
     mode: str
-    score: float
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -57,7 +56,6 @@ class WordfreqMatch:
     term: str
     mode: str
     frequency: float
-    score: float
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -67,11 +65,6 @@ class WordfreqMatch:
 class TokenScore:
     token: TokenRecord
     script_profile: ScriptProfile
-    retain_score: float
-    non_retain_score: float
-    symbol_score: float
-    dictionary_score: float
-    wordfreq_score: float
     protected: bool
     status: str
     symbol_presets: list[str] = field(default_factory=list)
@@ -83,11 +76,6 @@ class TokenScore:
         return {
             "token": self.token.to_dict(),
             "script_profile": self.script_profile.to_dict(),
-            "retain_score": round(self.retain_score, 4),
-            "non_retain_score": round(self.non_retain_score, 4),
-            "symbol_score": round(self.symbol_score, 4),
-            "dictionary_score": round(self.dictionary_score, 4),
-            "wordfreq_score": round(self.wordfreq_score, 4),
             "protected": self.protected,
             "status": self.status,
             "symbol_presets": list(self.symbol_presets),

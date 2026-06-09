@@ -1,0 +1,241 @@
+import json
+
+import pytest
+
+from tokenpruner.architecture import inspect_model_architecture
+from tokenpruner.pruning import (
+    PruneRefusal,
+    model_vocabulary_size,
+    remap_model_config,
+    rewrite_tokenizer_json,
+    slice_model_vocab,
+    validate_pruning_architecture,
+    validate_pruning_runtime,
+)
+
+
+def test_validate_pruning_allows_shared_mtp_and_encoders():
+    report = inspect_model_architecture(
+        {
+            "model_type": "fake",
+            "text_config": {
+                "vocab_size": 16,
+                "mtp_num_hidden_layers": 1,
+                "mtp_use_dedicated_embeddings": False,
+            },
+            "vision_config": {"model_type": "fake_vision"},
+        }
+    )
+
+    validate_pruning_architecture(report, 12)
+
+    assert model_vocabulary_size(report, 12) == 16
+
+
+def test_validate_pruning_refuses_differently_sized_vocab_surfaces():
+    report = inspect_model_architecture(
+        {
+            "model_type": "fake",
+            "text_config": {"vocab_size": 8},
+            "talker_config": {"vocab_size": 4},
+        }
+    )
+
+    with pytest.raises(PruneRefusal, match="smaller than the tokenizer"):
+        validate_pruning_architecture(report, 8)
+
+
+def test_validate_pruning_runtime_names_missing_quantization_dependency(monkeypatch):
+    report = inspect_model_architecture(
+        {
+            "model_type": "fake",
+            "vocab_size": 8,
+            "quantization_config": {"quant_method": "modelopt"},
+        }
+    )
+    available = {"torch": True, "modelopt": False}
+    monkeypatch.setattr("tokenpruner.pruning._module_available", lambda name: available.get(name, False))
+
+    with pytest.raises(PruneRefusal, match="nvidia-modelopt"):
+        validate_pruning_runtime(report)
+
+
+def test_rewrite_tokenizer_json_remaps_dict_vocab_and_added_tokens(tmp_path):
+    tokenizer_json = tmp_path / "tokenizer.json"
+    tokenizer_json.write_text(
+        json.dumps(
+            {
+                "model": {
+                    "type": "BPE",
+                    "vocab": {"<s>": 0, "h": 1, "i": 2, "hi": 3, "bye": 4},
+                    "merges": ["h i", "b ye"],
+                },
+                "added_tokens": [{"id": 0, "content": "<s>"}, {"id": 4, "content": "bye"}],
+                "post_processor": {"special_tokens": {"<s>": {"ids": ["<s>", 0], "tokens": ["<s>"]}}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rewrite_tokenizer_json(tokenizer_json, {0: 0, 1: 1, 2: 2, 3: 3})
+
+    data = json.loads(tokenizer_json.read_text(encoding="utf-8"))
+    assert data["model"]["vocab"] == {"<s>": 0, "h": 1, "i": 2, "hi": 3}
+    assert data["model"]["merges"] == ["h i"]
+    assert data["added_tokens"] == [{"id": 0, "content": "<s>"}]
+    assert data["post_processor"]["special_tokens"]["<s>"]["ids"] == ["<s>", 0]
+
+
+def test_rewrite_tokenizer_json_remaps_list_vocab(tmp_path):
+    tokenizer_json = tmp_path / "tokenizer.json"
+    tokenizer_json.write_text(
+        json.dumps({"model": {"type": "Unigram", "vocab": [["<s>", 0.0], ["hello", -1.0], ["bye", -2.0]]}}),
+        encoding="utf-8",
+    )
+
+    rewrite_tokenizer_json(tokenizer_json, {0: 0, 2: 1})
+
+    data = json.loads(tokenizer_json.read_text(encoding="utf-8"))
+    assert data["model"]["vocab"] == [["<s>", 0.0], ["bye", -2.0]]
+
+
+def test_rewrite_tokenizer_json_refuses_unknown_vocab_shape(tmp_path):
+    tokenizer_json = tmp_path / "tokenizer.json"
+    tokenizer_json.write_text(json.dumps({"model": {"type": "Mystery"}}), encoding="utf-8")
+
+    with pytest.raises(PruneRefusal, match="model.vocab"):
+        rewrite_tokenizer_json(tokenizer_json, {0: 0})
+
+
+def test_slice_model_vocab_slices_input_and_untied_output_head():
+    torch = pytest.importorskip("torch")
+
+    class Config:
+        vocab_size = 4
+
+    class FakeModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = Config()
+            self.input_embeddings = torch.nn.Embedding(4, 2)
+            self.output_embeddings = torch.nn.Linear(2, 4, bias=False)
+            self.input_embeddings.weight.data.copy_(torch.tensor([[0.0, 1.0], [2.0, 3.0], [4.0, 5.0], [6.0, 7.0]]))
+            self.output_embeddings.weight.data.copy_(
+                torch.tensor([[10.0, 11.0], [12.0, 13.0], [14.0, 15.0], [16.0, 17.0]])
+            )
+
+        def get_input_embeddings(self):
+            return self.input_embeddings
+
+        def set_input_embeddings(self, embeddings):
+            self.input_embeddings = embeddings
+
+        def get_output_embeddings(self):
+            return self.output_embeddings
+
+        def set_output_embeddings(self, embeddings):
+            self.output_embeddings = embeddings
+
+    model = FakeModel()
+
+    slice_model_vocab(model, [0, 2, 3], {0: 0, 2: 1, 3: 2})
+
+    assert model.config.vocab_size == 3
+    assert model.get_input_embeddings().weight.tolist() == [[0.0, 1.0], [4.0, 5.0], [6.0, 7.0]]
+    assert model.get_output_embeddings().weight.tolist() == [[10.0, 11.0], [14.0, 15.0], [16.0, 17.0]]
+
+
+def test_slice_model_vocab_handles_shared_and_separate_mtp_surfaces():
+    torch = pytest.importorskip("torch")
+
+    class Config:
+        vocab_size = 4
+
+    class FakeModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = Config()
+            self.embed_tokens = torch.nn.Embedding(4, 2)
+            self.lm_head = torch.nn.Linear(2, 4, bias=False)
+            self.mtp = torch.nn.Module()
+            self.mtp.embed_tokens = torch.nn.Embedding(4, 2)
+            self.mtp.embed_tokens.weight = self.embed_tokens.weight
+            self.mtp.lm_head = torch.nn.Linear(2, 4, bias=False)
+
+        def get_input_embeddings(self):
+            return self.embed_tokens
+
+        def get_output_embeddings(self):
+            return self.lm_head
+
+    model = FakeModel()
+
+    surfaces = slice_model_vocab(model, [0, 2], {0: 0, 2: 1}, original_vocab_size=4)
+
+    assert model.embed_tokens.weight.shape == (2, 2)
+    assert model.mtp.embed_tokens.weight is model.embed_tokens.weight
+    assert model.lm_head.weight.shape == (2, 2)
+    assert model.mtp.lm_head.weight.shape == (2, 2)
+    assert {surface.kind for surface in surfaces} == {"embedding", "output_head", "mtp_embedding", "mtp_output_head"}
+    assert next(surface for surface in surfaces if surface.kind == "mtp_embedding").shared_with == "input_embeddings"
+
+
+def test_slice_model_vocab_preserves_quantized_module_and_row_metadata():
+    torch = pytest.importorskip("torch")
+
+    class QuantizedHead(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.arange(16, dtype=torch.uint8).reshape(4, 4), requires_grad=False)
+            self.weight_scale = torch.nn.Parameter(torch.arange(8, dtype=torch.float32).reshape(4, 2), requires_grad=False)
+            self.out_features = 4
+
+    class Config:
+        vocab_size = 4
+
+    class FakeModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = Config()
+            self.embed_tokens = torch.nn.Embedding(4, 2)
+            self.lm_head = QuantizedHead()
+
+        def get_input_embeddings(self):
+            return self.embed_tokens
+
+        def get_output_embeddings(self):
+            return self.lm_head
+
+    model = FakeModel()
+    original_type = type(model.lm_head)
+
+    surfaces = slice_model_vocab(model, [1, 3], {1: 0, 3: 1}, original_vocab_size=4)
+
+    assert type(model.lm_head) is original_type
+    assert model.lm_head.weight.tolist() == [[4, 5, 6, 7], [12, 13, 14, 15]]
+    assert model.lm_head.weight_scale.tolist() == [[2.0, 3.0], [6.0, 7.0]]
+    assert model.lm_head.out_features == 2
+    assert next(surface for surface in surfaces if surface.kind == "output_head").quantized is True
+
+
+def test_remap_model_config_updates_text_vocab_and_modality_ids():
+    config = {
+        "text_config": {
+            "vocab_size": 8,
+            "bos_token_id": 1,
+            "eos_token_id": 7,
+            "mtp_use_dedicated_embeddings": False,
+        },
+        "vision_config": {"hidden_size": 32},
+        "image_token_id": 6,
+        "video_token_id": 7,
+    }
+
+    remap_model_config(config, {1: 0, 6: 1, 7: 2}, original_vocab_size=8)
+
+    assert config["text_config"]["vocab_size"] == 3
+    assert config["text_config"]["bos_token_id"] == 0
+    assert config["text_config"]["eos_token_id"] == 2
+    assert config["image_token_id"] == 1
+    assert config["video_token_id"] == 2
+    assert config["vision_config"]["hidden_size"] == 32

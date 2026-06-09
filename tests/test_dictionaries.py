@@ -9,7 +9,6 @@ def test_dictionary_exact_and_subword_matches():
     suffix = dictionary_matches("izer", dictionaries)
 
     assert exact[0].mode == "exact"
-    assert exact[0].score > subword[0].score
     assert subword[0].term == "hello"
     assert suffix[0].term == "tokenizer"
 
