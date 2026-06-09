@@ -1,87 +1,34 @@
 # TokenPruner
 
-TokenPruner is a tokenizer vocabulary analysis and pruning toolkit. It can inspect a
-model/tokenizer, classify sampled or full vocabularies with a deterministic
-accept/prune decision tree, write retained/pruned token ID lists, and prune supported
-Hugging Face language and multimodal models with compact text-token IDs.
+TokenPruner analyzes tokenizer vocabularies and decides which tokens to keep for a
+target workload. It combines character scripts, symbol presets, dictionaries, and
+`wordfreq` language evidence with a deterministic accept/prune decision tree.
 
-```bash
-tokenpruner inspect --model Qwen/Qwen3.5-Coder
+## Commands
 
-tokenpruner analyze \
-  --model Qwen/Qwen3.5-Coder \
-  --keep-script Latin Common Inherited \
-  --drop-script Han Hiragana Katakana Hangul Cyrillic \
-  --symbol-preset coding shell json markdown \
-  --wordfreq-lang en \
-  --sample-size 200 \
-  --show stats \
-  --save ./reports/sampled_token_decisions.jsonl
-
-tokenpruner list \
-  --model Qwen/Qwen3.5-Coder \
-  --keep-script Latin Common Inherited \
-  --drop-script Han Hiragana Katakana Hangul Cyrillic \
-  --symbol-preset coding shell json markdown \
-  --wordfreq-lang en \
-  --output ./lists/qwen3.5-coder-en-coding
-
-tokenpruner prune \
-  --model Qwen/Qwen3.5-Coder \
-  --keep-script Latin Common Inherited \
-  --drop-script Han Hiragana Katakana Hangul Cyrillic \
-  --symbol-preset coding shell json markdown \
-  --wordfreq-lang en \
-  --show examples:20 \
-  --output ./models/qwen3.5-coder-pruned-en-coding
-```
+- `inspect`: load a tokenizer/model config and report vocabulary metadata.
+  - `--model`: Hugging Face model ID or local path.
+  - `--trust-remote-code`: pass through to Hugging Face loaders.
+- `analyze`: classify sampled or full vocabularies and print/save diagnostics.
+  - `--model`
+  - policy parameters: `--keep-script`, `--drop-script`, `--symbol-preset`,
+    `--dictionary`, `--wordfreq-lang`, `--wordfreq-min-zipf`, `--wordfreq-top-pct`
+  - sampling/display: `--sample-size`, `--seed`, `--workers`, `--show`, `--save`
+- `list`: classify the full vocabulary and write reusable token ID artifacts.
+  - `--model`, `--output`
+  - policy parameters
+  - `--workers`
+- `prune`: prune a supported model with compact text-token IDs.
+  - `--model`, `--output`
+  - policy parameters, or `--retained-token-ids` from `tokenpruner list`
+  - `--workers`, `--show`, `--yes`
 
 `list` writes `retained_token_ids.txt`, `pruned_token_ids.txt`,
-`token_decisions.jsonl`, and `policy.json`. `prune` uses compact token ID remapping
-and writes `old_to_new_token_ids.json`, `new_to_old_token_ids.json`, and
-`pruning_report.json` alongside the saved model/tokenizer.
+`token_decisions.jsonl`, and `policy.json`. `prune` writes the remapped model plus
+`old_to_new_token_ids.json`, `new_to_old_token_ids.json`, and
+`pruning_report.json`.
 
-Before downloading model weights, `prune` prints the original, retained, and pruned
-vocabulary sizes and shows the same summary format as `analyze`. Add `--show
-examples:20` to review retained and pruned examples before confirmation. Other
-`analyze` display modes can also be combined through `--show`. Use `--yes` to skip
-the prompt in scripts or unattended runs.
-
-When `--retained-token-ids` is supplied, only the summary is available because that
-file does not contain the token decision records needed to produce examples.
-
-Pruning discovers every module that uses the text vocabulary. Shared input/MTP
-embeddings are sliced once, while separate MTP embeddings or output heads are sliced
-independently. Vision and audio encoders remain unchanged; their text-vocabulary
-marker IDs are retained and remapped in the model configuration.
-
-Quantized vocabulary modules are sliced in place, including row-aligned scale and
-metadata tensors, so ModelOpt and compressed-tensors NVFP4 module classes are
-preserved. Pruning requires the runtime packages needed to load the original
-checkpoint, such as a compatible PyTorch build plus `nvidia-modelopt` for ModelOpt
-checkpoints or `compressed-tensors` for compressed-tensors checkpoints.
-
-Install a PyTorch build appropriate for the machine first, then install the matching
-TokenPruner extra:
-
-```bash
-pip install -e '.[modelopt]'             # NVIDIA ModelOpt checkpoints
-pip install -e '.[compressed-tensors]'   # Unsloth compressed-tensors checkpoints
-```
-
-When `prune` detects missing runtime packages, it prints the equivalent
-`python -m pip install ...` command and asks whether to install them into the active
-environment. `--yes` also approves this dependency-installation prompt.
-
-TokenPruner refuses only unresolved differently sized vocabularies that require their
-own token mapping, or modules whose vocabulary-row tensors cannot be identified.
-
-`inspect` also reads the model configuration and reports declared modality encoders,
-vocabulary-bearing submodels, embedding/LM-head tying, and MTP settings. A separate
-MTP head is only reported as confirmed when the configuration declares it; otherwise,
-checkpoint-module inspection is still required before pruning.
-
-## Supported Scripts and Languages
+## Scripts
 
 `--keep-script` and `--drop-script` accept these script names:
 
@@ -95,6 +42,8 @@ Script selection controls which character families may pass the character gate. 
 does not select a language dictionary. For example, `Latin` can contain English,
 French, German, and many other languages.
 
+## Symbols
+
 `--symbol-preset` accepts these preset names:
 
 - `coding`, `shell`, `json`, `yaml`, `xml`, `markdown`
@@ -107,6 +56,8 @@ Symbol presets allow specific punctuation, operators, emoji, or math/science
 symbols to pass the character gate without broadly accepting an entire language
 script. For example, `--symbol-preset mathematics` can accept `π` while
 `--keep-script Greek` would more broadly allow Greek-script text.
+
+## Languages
 
 The built-in dictionaries are loaded together by default:
 
