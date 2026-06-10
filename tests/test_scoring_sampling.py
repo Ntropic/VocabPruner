@@ -14,7 +14,7 @@ def test_special_and_byte_fallback_are_protected():
 
 def test_script_preselection_prunes_non_retained_script():
     record = TokenRecord(2, "Ж", "Ж")
-    config = ScoreConfig(keep_scripts={"Latin", "Common", "Inherited"}, drop_scripts={"Cyrillic"}, wordfreq_languages=())
+    config = ScoreConfig(keep_scripts={"Latin", "Common", "Inherited"}, wordfreq_languages=())
 
     score = score_token(record, config)
 

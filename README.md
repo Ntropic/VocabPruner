@@ -7,30 +7,78 @@ target workload. It combines character scripts, symbol presets, dictionaries, an
 ## Commands
 
 - `inspect`: load a tokenizer/model config and report vocabulary metadata.
-  - `--model`: Hugging Face model ID or local path.
-  - `--trust-remote-code`: pass through to Hugging Face loaders.
 - `analyze`: classify sampled or full vocabularies and print/save diagnostics.
-  - `--model`
-  - policy parameters: `--keep-script`, `--drop-script`, `--symbol-preset`,
-    `--dictionary`, `--wordfreq-lang`, `--wordfreq-min-zipf`, `--wordfreq-top-pct`
-  - sampling/display: `--sample-size`, `--seed`, `--workers`, `--show`, `--save`
 - `list`: classify the full vocabulary and write reusable token ID artifacts.
-  - `--model`, `--output`
-  - policy parameters
-  - `--workers`
-- `prune`: prune a supported model with compact text-token IDs.
-  - `--model`, `--output`
-  - policy parameters, or `--retained-token-ids` from `tokenpruner list`
-  - `--workers`, `--show`, `--yes`
+- `prune`: prune a supported model with compact text-token IDs; safetensors checkpoints are rewritten shard-by-shard without loading the full model.
 
-`list` writes `retained_token_ids.txt`, `pruned_token_ids.txt`,
-`token_decisions.jsonl`, and `policy.json`. `prune` writes the remapped model plus
-`old_to_new_token_ids.json`, `new_to_old_token_ids.json`, and
-`pruning_report.json`.
+## Parameters
+
+- `--model`: Hugging Face model ID or local path.
+- `--trust-remote-code`: advanced Hugging Face loader flag; use only for trusted model repos that require custom Python code.
+- `--keep-script`: allowed Unicode scripts for the character gate.
+- `--symbol-preset`: allowed symbol families such as coding, JSON, mathematics, emoji.
+- `--dictionary`: repeated custom term files for explicit domain/project vocabulary.
+- `--wordfreq-lang`: broad natural-language frequency evidence.
+- `--wordfreq-min-zipf`: absolute word frequency cutoff; default/recommended threshold style.
+- `--wordfreq-top-pct`: relative top-percent language vocabulary cutoff; alternative to Zipf.
+- `--workers`: parallel token classification for `analyze`, `list`, and `prune`.
+- `--sample-size`: `analyze` token sample size; `-1` means all.
+- `--seed`: deterministic `analyze` sampling/examples.
+- `--show`: stdout display mode, e.g. `stats`, `all`, `examples`, `json`.
+- `--save [DIR]`: filesystem artifact directory for `analyze`, `list`, and `prune`; omit `DIR` to use a generated path based on the model and policy.
+- `--retained-token-ids`: `prune` reuses a previous `list` keep-list and skips reclassification.
+- `--yes`: skip prune confirmation prompts.
+
+`--show` prints to stdout. `--save` writes files. Bare `--save` uses
+`tokenpruner_artifacts/<command>/<model-and-policy-slug>/`. `analyze --save` writes
+`{token_decisions.jsonl, summary.md, policy.json}`. `list --save` writes
+`{retained_token_ids.txt, pruned_token_ids.txt, token_decisions.jsonl, policy.json}`.
+`prune --save` writes the remapped model plus token maps and `pruning_report.json`.
+Use either `--wordfreq-min-zipf` or `--wordfreq-top-pct`, not both.
+
+For safetensors checkpoints, `prune` copies non-vocabulary tensors unchanged and
+slices only vocabulary-bearing tensors such as token embeddings, LM heads, MTP
+heads, and matching row-wise quantization side tensors. Full model loading is a
+fallback for unsupported non-safetensors checkpoints.
+
+For indexed safetensors checkpoints, `model.safetensors.index.json` is treated as
+authoritative: every referenced shard or sidecar, such as `model_mtp.safetensors`,
+must be present, non-empty, and readable before pruning starts.
+
+## Example Results
+
+This run keeps Latin/Common/Inherited characters, all built-in symbol presets,
+and English/German/Spanish word-frequency evidence at Zipf >= 3:
+
+```bash
+tokenpruner prune \
+  --model inferRouter/Qwen3.6-27B-NVFP4 \
+  --keep-script Latin Common Inherited \
+  --symbol-preset all \
+  --wordfreq-lang en de es \
+  --wordfreq-min-zipf 3 \
+  --workers 14 \
+  --show stats
+```
+
+For the 35B A3B run, use the same command and change only `--model` to
+`nvidia/Qwen3.6-35B-A3B-NVFP4`.
+
+Both tokenizers started with 248,077 tokens and retained 111,236 tokens, pruning
+136,841 vocabulary entries. The checkpoint savings differ because each model
+stores vocab-facing tensors differently.
+
+| Model | Checkpoint Before | Checkpoint After | Saved | Checkpoint Reduction | Main-Path Bandwidth Saved | MTP-Path Bandwidth Saved |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `inferRouter/Qwen3.6-27B-NVFP4` | 23.82 GB | 21.02 GB | 2.81 GB | 12% | 7% | 41% |
+| `nvidia/Qwen3.6-35B-A3B-NVFP4` | 23.42 GB | 22.70 GB | 0.72 GB | 3% | 5% | 38% |
+
+The 35B model is A3B/MoE, so checkpoint size reduction and active weight
+bandwidth reduction are different views of the same pruning result.
 
 ## Scripts
 
-`--keep-script` and `--drop-script` accept these script names:
+`--keep-script` accepts these script names:
 
 - `Latin`, `Greek`, `Cyrillic`
 - `Arabic`, `Hebrew`, `Devanagari`, `Thai`

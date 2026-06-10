@@ -6,6 +6,7 @@ from tokenpruner.architecture import inspect_model_architecture
 from tokenpruner.pruning import (
     PruneRefusal,
     model_vocabulary_size,
+    prune_safetensors_checkpoint,
     remap_model_config,
     rewrite_tokenizer_json,
     slice_model_vocab,
@@ -239,3 +240,202 @@ def test_remap_model_config_updates_text_vocab_and_modality_ids():
     assert config["image_token_id"] == 1
     assert config["video_token_id"] == 2
     assert config["vision_config"]["hidden_size"] == 32
+
+
+def test_prune_safetensors_checkpoint_streams_only_vocab_tensors(monkeypatch, tmp_path):
+    torch = pytest.importorskip("torch")
+    safetensors = pytest.importorskip("safetensors.torch")
+
+    class FakeTokenizer:
+        def save_pretrained(self, output_dir):
+            path = output_dir / "tokenizer.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "model": {
+                            "type": "BPE",
+                            "vocab": {"<s>": 0, "hello": 1, "bye": 2, "!": 3},
+                            "merges": [],
+                        },
+                        "added_tokens": [{"id": 0, "content": "<s>"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "config.json").write_text(json.dumps({"vocab_size": 4}), encoding="utf-8")
+    (source / "generation_config.json").write_text(json.dumps({"max_length": 32}), encoding="utf-8")
+    safetensors.save_file(
+        {
+            "model.embed_tokens.weight": torch.tensor([[0, 1], [2, 3], [4, 5], [6, 7]], dtype=torch.float32),
+            "lm_head.weight": torch.tensor([[10, 11], [12, 13], [14, 15], [16, 17]], dtype=torch.float32),
+            "lm_head.weight_scale": torch.tensor([[1], [2], [3], [4]], dtype=torch.float32),
+            "model.layers.0.mlp.down_proj.weight": torch.tensor([[100, 101], [102, 103]], dtype=torch.float32),
+        },
+        source / "model.safetensors",
+    )
+    safetensors.save_file(
+        {
+            "mtp.fc.weight": torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float32),
+        },
+        source / "model_mtp.safetensors",
+    )
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "metadata": {},
+                "weight_map": {
+                    "model.embed_tokens.weight": "model.safetensors",
+                    "lm_head.weight": "model.safetensors",
+                    "lm_head.weight_scale": "model.safetensors",
+                    "model.layers.0.mlp.down_proj.weight": "model.safetensors",
+                    "mtp.fc.weight": "model_mtp.safetensors",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("tokenpruner.pruning.validate_saved_tokenizer", lambda *args, **kwargs: None)
+
+    result = prune_safetensors_checkpoint(
+        model_source=str(source),
+        tokenizer=FakeTokenizer(),
+        config={"vocab_size": 4},
+        output_dir=tmp_path / "out",
+        retained_token_ids=[0, 2],
+        original_vocab_size=4,
+        model_vocab_size=4,
+    )
+
+    assert result is not None
+    tensors = safetensors.load_file(tmp_path / "out" / "model.safetensors")
+    mtp_tensors = safetensors.load_file(tmp_path / "out" / "model_mtp.safetensors")
+    assert tensors["model.embed_tokens.weight"].tolist() == [[0, 1], [4, 5]]
+    assert tensors["lm_head.weight"].tolist() == [[10, 11], [14, 15]]
+    assert tensors["lm_head.weight_scale"].tolist() == [[1], [3]]
+    assert tensors["model.layers.0.mlp.down_proj.weight"].tolist() == [[100, 101], [102, 103]]
+    assert mtp_tensors["mtp.fc.weight"].tolist() == [[1.0, 2.0], [3.0, 4.0]]
+    config = json.loads((tmp_path / "out" / "config.json").read_text(encoding="utf-8"))
+    report = json.loads((tmp_path / "out" / "pruning_report.json").read_text(encoding="utf-8"))
+    assert config["vocab_size"] == 2
+    assert (tmp_path / "out" / "generation_config.json").exists()
+    surface_names = {surface.name for surface in result.transformed_surfaces}
+    assert surface_names == {"model.embed_tokens", "lm_head"}
+    assert result.original_checkpoint_bytes == (source / "model.safetensors").stat().st_size + (
+        source / "model_mtp.safetensors"
+    ).stat().st_size
+    assert result.pruned_checkpoint_bytes == (
+        tmp_path / "out" / "model.safetensors"
+    ).stat().st_size + (tmp_path / "out" / "model_mtp.safetensors").stat().st_size
+    assert report["original_checkpoint_bytes"] == result.original_checkpoint_bytes
+    assert report["pruned_checkpoint_bytes"] == result.pruned_checkpoint_bytes
+    assert report["checkpoint_size_reduction_bytes"] == result.original_checkpoint_bytes - result.pruned_checkpoint_bytes
+
+
+def test_prune_safetensors_checkpoint_refuses_missing_indexed_file(tmp_path):
+    torch = pytest.importorskip("torch")
+    safetensors = pytest.importorskip("safetensors.torch")
+
+    source = tmp_path / "source"
+    source.mkdir()
+    safetensors.save_file(
+        {"model.embed_tokens.weight": torch.zeros((4, 2), dtype=torch.float32)},
+        source / "model.safetensors",
+    )
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "metadata": {},
+                "weight_map": {
+                    "model.embed_tokens.weight": "model.safetensors",
+                    "mtp.fc.weight": "model_mtp.safetensors",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PruneRefusal, match="snapshot is incomplete"):
+        prune_safetensors_checkpoint(
+            model_source=str(source),
+            tokenizer=object(),
+            config={"vocab_size": 4},
+            output_dir=tmp_path / "out",
+            retained_token_ids=[0, 1],
+            original_vocab_size=4,
+            model_vocab_size=4,
+        )
+
+
+def test_prune_safetensors_checkpoint_refuses_empty_indexed_file(tmp_path):
+    torch = pytest.importorskip("torch")
+    safetensors = pytest.importorskip("safetensors.torch")
+
+    source = tmp_path / "source"
+    source.mkdir()
+    safetensors.save_file(
+        {"model.embed_tokens.weight": torch.zeros((4, 2), dtype=torch.float32)},
+        source / "model.safetensors",
+    )
+    (source / "model_mtp.safetensors").write_bytes(b"")
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "metadata": {},
+                "weight_map": {
+                    "model.embed_tokens.weight": "model.safetensors",
+                    "mtp.fc.weight": "model_mtp.safetensors",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PruneRefusal, match="file\\(s\\) are empty"):
+        prune_safetensors_checkpoint(
+            model_source=str(source),
+            tokenizer=object(),
+            config={"vocab_size": 4},
+            output_dir=tmp_path / "out",
+            retained_token_ids=[0, 1],
+            original_vocab_size=4,
+            model_vocab_size=4,
+        )
+
+
+def test_prune_safetensors_checkpoint_refuses_corrupt_indexed_file(tmp_path):
+    torch = pytest.importorskip("torch")
+    safetensors = pytest.importorskip("safetensors.torch")
+
+    source = tmp_path / "source"
+    source.mkdir()
+    safetensors.save_file(
+        {"model.embed_tokens.weight": torch.zeros((4, 2), dtype=torch.float32)},
+        source / "model.safetensors",
+    )
+    (source / "model_mtp.safetensors").write_bytes(b"not a safetensors file")
+    (source / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "metadata": {},
+                "weight_map": {
+                    "model.embed_tokens.weight": "model.safetensors",
+                    "mtp.fc.weight": "model_mtp.safetensors",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PruneRefusal, match="incomplete or corrupt"):
+        prune_safetensors_checkpoint(
+            model_source=str(source),
+            tokenizer=object(),
+            config={"vocab_size": 4},
+            output_dir=tmp_path / "out",
+            retained_token_ids=[0, 1],
+            original_vocab_size=4,
+            model_vocab_size=4,
+        )

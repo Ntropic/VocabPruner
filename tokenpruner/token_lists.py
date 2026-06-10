@@ -85,7 +85,6 @@ def load_token_id_file(path: str | Path) -> list[int]:
 def score_config_to_dict(config: ScoreConfig) -> dict[str, Any]:
     return {
         "keep_scripts": sorted(config.keep_scripts),
-        "drop_scripts": sorted(config.drop_scripts),
         "symbol_presets": sorted(config.symbol_presets),
         "wordfreq_languages": list(config.wordfreq_languages),
         "wordfreq_min_zipf": config.wordfreq_min_zipf,
