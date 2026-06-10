@@ -1,15 +1,13 @@
 from __future__ import annotations
 
-import json
 import random
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Literal
 
 from tokenpruner.models import TokenScore
 from tokenpruner.vocab import TokenRecord, vocabulary_stats
 
-ShowOption = Literal["all", "examples", "stats", "json"]
+ShowOption = Literal["all", "examples", "stats", "list"]
 ShowOptions = ShowOption | list[ShowOption] | tuple[ShowOption, ...] | set[ShowOption]
 
 
@@ -19,33 +17,9 @@ class ExampleCounts:
     pruned: int = 5
 
 
-def write_reports(
-    output_dir: str | Path,
-    model: str,
-    records: list[TokenRecord],
-    scores: list[TokenScore],
-    sample_size: int,
-    seed: int,
-    show: ShowOptions = ("all",),
-) -> tuple[Path, Path]:
-    output = Path(output_dir)
-    output.mkdir(parents=True, exist_ok=True)
-    jsonl_path = output / "sampled_token_decisions.jsonl"
-    markdown_path = output / "summary.md"
-    visible_scores = filter_scores(scores, show)
-
-    with jsonl_path.open("w", encoding="utf-8") as handle:
-        for score in visible_scores:
-            handle.write(json.dumps(score.to_dict(), ensure_ascii=False) + "\n")
-
-    markdown_path.write_text(
-        render_markdown(model, records, scores, sample_size, seed, show=show),
-        encoding="utf-8",
-    )
-    return markdown_path, jsonl_path
-
-
 def render_jsonl(scores: list[TokenScore]) -> str:
+    import json
+
     return "\n".join(json.dumps(score.to_dict(), ensure_ascii=False) for score in scores)
 
 
@@ -53,7 +27,6 @@ def render_markdown(
     model: str,
     records: list[TokenRecord],
     scores: list[TokenScore],
-    sample_size: int,
     seed: int,
     show: ShowOptions = ("all",),
 ) -> str:
@@ -76,7 +49,6 @@ def render_markdown(
         f"- Vocabulary size: {stats['vocab_size']}",
         f"- Special tokens: {stats['special_tokens']}",
         f"- Byte fallback tokens: {stats['byte_fallback_tokens']}",
-        f"- Sample size: {_sample_size_label(sample_size)}",
         f"- Classified tokens: {len(scores)}",
         f"- Displayed tokens: {len(visible_scores)}",
         f"- Show mode: {_show_label(show)}",
@@ -98,7 +70,6 @@ def render_plain_text(
     model: str,
     records: list[TokenRecord],
     scores: list[TokenScore],
-    sample_size: int,
     seed: int,
     show: ShowOptions = ("all",),
     example_counts: ExampleCounts = ExampleCounts(),
@@ -116,7 +87,6 @@ def render_plain_text(
         f"Special tokens: {stats['special_tokens']}",
         f"Byte fallback tokens: {stats['byte_fallback_tokens']}",
         "",
-        f"Sample size: {_sample_size_label(sample_size)}",
         f"Classified tokens: {len(scores)}",
         f"Displayed tokens: {len(visible_scores)}",
         f"Show mode: {_show_label(show)}",
@@ -134,24 +104,9 @@ def render_plain_text(
     return "\n".join(parts)
 
 
-def render_stats(model: str, scores: list[TokenScore], sample_size: int, seed: int) -> str:
-    stats_counts = score_stats(scores)
-    return "\n".join(
-        [
-            "TokenPruner Stats",
-            f"Model/tokenizer: {model}",
-            f"Sample size: {_sample_size_label(sample_size)}",
-            f"Classified: {len(scores)}",
-            f"Random seed: {seed}",
-            f"Retained: {stats_counts['retained']}",
-            f"Pruned: {stats_counts['pruned']}",
-        ]
-    )
-
-
 def filter_scores(scores: list[TokenScore], show: ShowOptions) -> list[TokenScore]:
     options = normalize_show_options(show)
-    if "all" in options or "json" in options:
+    if "all" in options or "list" in options:
         return list(scores)
     return []
 
@@ -160,8 +115,8 @@ def should_show_rows(show: ShowOptions) -> bool:
     return "all" in normalize_show_options(show)
 
 
-def should_show_json(show: ShowOptions) -> bool:
-    return "json" in normalize_show_options(show)
+def should_show_list(show: ShowOptions) -> bool:
+    return "list" in normalize_show_options(show)
 
 
 def should_show_examples(show: ShowOptions) -> bool:
@@ -172,7 +127,7 @@ def normalize_show_options(show: ShowOptions) -> set[ShowOption]:
     if isinstance(show, str):
         return {show}
     options = {option for option in show}
-    unknown = options - {"all", "examples", "stats", "json"}
+    unknown = options - {"all", "examples", "stats", "list"}
     if unknown:
         raise ValueError(f"Unsupported show options: {', '.join(sorted(unknown))}")
     return options
@@ -258,12 +213,8 @@ def _rich_escape(value: str) -> str:
     return value.replace("[", "\\[").replace("]", "\\]")
 
 
-def _sample_size_label(sample_size: int) -> str:
-    return "all" if sample_size == -1 else str(sample_size)
-
-
 def _show_label(show: ShowOptions) -> str:
     options = normalize_show_options(show)
     return " ".join(
-        option for option in ["stats", "all", "examples", "json"] if option in options
+        option for option in ["stats", "all", "examples", "list"] if option in options
     )

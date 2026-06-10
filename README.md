@@ -7,43 +7,24 @@ target workload. It combines character scripts, symbol presets, dictionaries, an
 ## Commands
 
 - `inspect`: load a tokenizer/model config and report vocabulary metadata.
-- `analyze`: classify sampled or full vocabularies and print/save diagnostics.
-- `list`: classify the full vocabulary and write reusable token ID artifacts.
+- `analyze`: classify vocabularies through the shared cache and print/save diagnostics.
 - `prune`: prune a supported model with compact text-token IDs; safetensors checkpoints are rewritten shard-by-shard without loading the full model.
 
 ## Parameters
 
 - `--model`: Hugging Face model ID or local path.
-- `--trust-remote-code`: advanced Hugging Face loader flag; use only for trusted model repos that require custom Python code.
+- `--languages`: languages for which TokenPruner stores and checks frequency scores.
+- `--wordfreq-min-zipf`: absolute word frequency cutoff; default/recommended threshold style.
+- `--wordfreq-top-pct`: relative top-percent language vocabulary cutoff; alternative to Zipf.
+- `--show`: display/output mode, e.g. `stats`, `all`, `examples`, `list`, `html`.
+- `--save [PATH]`: filesystem output path for `analyze` and `prune`; omit `PATH` to use a generated path based on the model and policy.
+
 - `--keep-script`: allowed Unicode scripts for the character gate.
 - `--symbol-preset`: allowed symbol families such as coding, JSON, mathematics, emoji.
 - `--dictionary`: repeated custom term files for explicit domain/project vocabulary.
-- `--wordfreq-lang`: broad natural-language frequency evidence.
-- `--wordfreq-min-zipf`: absolute word frequency cutoff; default/recommended threshold style.
-- `--wordfreq-top-pct`: relative top-percent language vocabulary cutoff; alternative to Zipf.
-- `--workers`: parallel token classification for `analyze`, `list`, and `prune`.
-- `--sample-size`: `analyze` token sample size; `-1` means all.
 - `--seed`: deterministic `analyze` sampling/examples.
-- `--show`: stdout display mode, e.g. `stats`, `all`, `examples`, `json`.
-- `--save [DIR]`: filesystem artifact directory for `analyze`, `list`, and `prune`; omit `DIR` to use a generated path based on the model and policy.
-- `--retained-token-ids`: `prune` reuses a previous `list` keep-list and skips reclassification.
+- `--trust-remote-code`: trust custom code from Hugging Face model repositories.
 - `--yes`: skip prune confirmation prompts.
-
-`--show` prints to stdout. `--save` writes files. Bare `--save` uses
-`tokenpruner_artifacts/<command>/<model-and-policy-slug>/`. `analyze --save` writes
-`{token_decisions.jsonl, summary.md, policy.json}`. `list --save` writes
-`{retained_token_ids.txt, pruned_token_ids.txt, token_decisions.jsonl, policy.json}`.
-`prune --save` writes the remapped model plus token maps and `pruning_report.json`.
-Use either `--wordfreq-min-zipf` or `--wordfreq-top-pct`, not both.
-
-For safetensors checkpoints, `prune` copies non-vocabulary tensors unchanged and
-slices only vocabulary-bearing tensors such as token embeddings, LM heads, MTP
-heads, and matching row-wise quantization side tensors. Full model loading is a
-fallback for unsupported non-safetensors checkpoints.
-
-For indexed safetensors checkpoints, `model.safetensors.index.json` is treated as
-authoritative: every referenced shard or sidecar, such as `model_mtp.safetensors`,
-must be present, non-empty, and readable before pruning starts.
 
 ## Example Results
 
@@ -55,9 +36,8 @@ tokenpruner prune \
   --model inferRouter/Qwen3.6-27B-NVFP4 \
   --keep-script Latin Common Inherited \
   --symbol-preset all \
-  --wordfreq-lang en de es \
+  --languages en de es \
   --wordfreq-min-zipf 3 \
-  --workers 14 \
   --show stats
 ```
 
@@ -125,7 +105,7 @@ tokenpruner analyze \
   --dictionary ./dictionaries/french.txt
 ```
 
-`--wordfreq-lang` is separate from the bundled dictionaries and accepts the
+`--languages` is separate from the bundled dictionaries and accepts the
 following `wordfreq` language codes:
 
 | Languages | Codes |
@@ -154,7 +134,13 @@ optional `wordfreq[cjk]` dependencies. See the
 
 ## Accept/Prune Decision Tree
 
-TokenPruner classifies each token with a deterministic decision tree. The final decision is binary:
+TokenPruner first computes threshold-independent retain candidates, then applies
+the selected wordfreq threshold. In cached facts, `retain_candidate` means the
+token passed deterministic protection/script/symbol gates and is eligible for
+language-frequency retention. It does not mean the token is definitely retained
+for every Zipf or top-percent setting.
+
+The final decision is binary:
 
 - `accept`: keep this token as useful/protected for the target workload.
 - `prune`: candidate for removal in a later pruning phase.

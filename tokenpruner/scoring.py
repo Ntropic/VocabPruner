@@ -18,7 +18,7 @@ IDENTIFIER_PART_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\b)|[A-Z]?[a-z]+|[A-Z]+")
 class ScoreConfig:
     keep_scripts: set[str] = field(default_factory=lambda: {"Latin", "Common", "Inherited"})
     symbol_presets: set[str] = field(default_factory=lambda: {"coding", "ascii-punctuation"})
-    wordfreq_languages: tuple[str, ...] = ("en",)
+    languages: tuple[str, ...] = ("en",)
     wordfreq_min_zipf: float = 4.0
     wordfreq_top_pct: float | None = None
     custom_dictionaries: tuple[str, ...] = ()
@@ -29,7 +29,7 @@ class ScoreConfig:
         cls,
         keep_scripts: list[str] | None = None,
         symbol_presets: list[str] | None = None,
-        wordfreq_languages: list[str] | None = None,
+        languages: list[str] | None = None,
         wordfreq_min_zipf: float | None = None,
         wordfreq_top_pct: float | None = None,
         dictionaries: list[str] | None = None,
@@ -43,7 +43,7 @@ class ScoreConfig:
         return cls(
             keep_scripts=normalize_scripts(keep_scripts or ["Latin", "Common", "Inherited"]),
             symbol_presets=normalize_presets(symbol_presets or ["coding", "ascii-punctuation"]),
-            wordfreq_languages=tuple(wordfreq_languages or ["en"]),
+            languages=tuple(languages or ["en"]),
             wordfreq_min_zipf=4.0 if wordfreq_min_zipf is None and wordfreq_top_pct is None else (wordfreq_min_zipf or 0.0),
             wordfreq_top_pct=wordfreq_top_pct,
             custom_dictionaries=tuple(dictionaries or []),
@@ -94,7 +94,7 @@ def score_token(record: TokenRecord, config: ScoreConfig, dictionaries: dict[str
             segment_dict_matches = dictionary_matches(segment.text, dictionaries)
             segment_wf_matches = wordfreq_matches(
                 segment.text,
-                list(config.wordfreq_languages),
+                list(config.languages),
                 min_zipf=config.wordfreq_min_zipf,
                 top_pct=config.wordfreq_top_pct,
             )

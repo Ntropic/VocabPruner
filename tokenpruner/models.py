@@ -56,6 +56,8 @@ class WordfreqMatch:
     term: str
     mode: str
     frequency: float
+    rank: int | None = None
+    rank_percent: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

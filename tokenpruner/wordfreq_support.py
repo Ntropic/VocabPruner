@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from dataclasses import dataclass
 
 from tokenpruner.dictionaries import normalize_token_text
 from tokenpruner.models import WordfreqMatch
+
+@dataclass(frozen=True)
+class WordfreqDiagnostic:
+    language: str
+    term: str
+    mode: str
+    frequency: float
+    rank: int | None
+    rank_percent: float | None
 
 
 def wordfreq_matches(
@@ -12,44 +22,98 @@ def wordfreq_matches(
     min_zipf: float = 4.0,
     top_pct: float | None = None,
 ) -> list[WordfreqMatch]:
+    """Compatibility wrapper over threshold-independent diagnostics."""
     if not languages:
         return []
-    try:
-        from wordfreq import zipf_frequency
-    except ImportError:
-        return []
+    matches: list[WordfreqMatch] = []
+    for diagnostic in wordfreq_diagnostics(text, languages):
+        if _passes_wordfreq_threshold(
+            diagnostic.language,
+            diagnostic.term,
+            diagnostic.frequency,
+            min_zipf,
+            top_pct,
+            rank_percent=diagnostic.rank_percent,
+        ):
+            matches.append(
+                _match(
+                    diagnostic.language,
+                    diagnostic.term,
+                    diagnostic.mode,
+                    diagnostic.frequency,
+                    diagnostic.rank,
+                    diagnostic.rank_percent,
+                )
+            )
+    return sorted(matches, key=lambda match: match.frequency, reverse=True)
 
+
+def wordfreq_diagnostics(
+    text: str,
+    languages: list[str] | None,
+    limit: int = 20,
+) -> list[WordfreqDiagnostic]:
+    if not languages:
+        return []
     token = normalize_token_text(text)
     if not token:
         return []
 
-    matches: list[WordfreqMatch] = []
+    diagnostics: list[WordfreqDiagnostic] = []
     for language in languages:
-        frequency = zipf_frequency(token, language)
-        if _passes_wordfreq_threshold(language, token, frequency, min_zipf, top_pct):
-            matches.append(_match(language, token, token, "exact", frequency))
-            continue
+        frequency = _zipf_frequency(token, language)
+        rank, rank_percent = _rank_info(language, token)
+        if frequency > 0 or rank is not None:
+            diagnostics.append(
+                WordfreqDiagnostic(
+                    language=language,
+                    term=token,
+                    mode="exact",
+                    frequency=frequency,
+                    rank=rank,
+                    rank_percent=rank_percent,
+                )
+            )
 
+        language_count = 1
         for word in _wordlist(language):
             word = word.lower()
             mode = _wordfreq_match_mode(token, word)
-            if mode is None:
+            if mode is None or mode == "exact":
                 continue
-            word_frequency = zipf_frequency(word, language)
-            if not _passes_wordfreq_threshold(language, word, word_frequency, min_zipf, top_pct):
-                continue
-            matches.append(_match(language, token, word, mode, word_frequency))
-            if len(matches) >= 20:
+            word_frequency = _zipf_frequency(word, language)
+            word_rank, word_rank_percent = _rank_info(language, word)
+            diagnostics.append(
+                WordfreqDiagnostic(
+                    language=language,
+                    term=word,
+                    mode=mode,
+                    frequency=word_frequency,
+                    rank=word_rank,
+                    rank_percent=word_rank_percent,
+                )
+            )
+            language_count += 1
+            if language_count >= limit:
                 break
-    return sorted(matches, key=lambda match: match.frequency, reverse=True)
+    return sorted(diagnostics, key=lambda item: item.frequency, reverse=True)
 
 
-def _match(language: str, token: str, term: str, mode: str, frequency: float) -> WordfreqMatch:
+def _match(
+    language: str,
+    term: str,
+    mode: str,
+    frequency: float,
+    rank: int | None,
+    rank_percent: float | None,
+) -> WordfreqMatch:
     return WordfreqMatch(
         language=language,
         term=term,
         mode=mode,
         frequency=frequency,
+        rank=rank,
+        rank_percent=rank_percent,
     )
 
 
@@ -71,11 +135,14 @@ def _passes_wordfreq_threshold(
     frequency: float,
     min_zipf: float,
     top_pct: float | None,
+    rank_percent: float | None = None,
 ) -> bool:
     if frequency < min_zipf:
         return False
     if top_pct is None:
         return True
+    if rank_percent is not None:
+        return rank_percent <= top_pct
     return _word_in_top_pct(language, word, top_pct)
 
 
@@ -94,3 +161,26 @@ def _wordlist(language: str) -> tuple[str, ...]:
     except ImportError:
         return ()
     return tuple(word.lower() for word in iter_wordlist(language, wordlist="small"))
+
+
+def _zipf_frequency(word: str, language: str) -> float:
+    try:
+        from wordfreq import zipf_frequency
+    except ImportError:
+        return 0.0
+    return zipf_frequency(word, language)
+
+
+@lru_cache(maxsize=128)
+def _word_rank_index(language: str) -> dict[str, int]:
+    return {word: index + 1 for index, word in enumerate(_wordlist(language))}
+
+
+def _rank_info(language: str, word: str) -> tuple[int | None, float | None]:
+    words = _wordlist(language)
+    if not words:
+        return None, None
+    rank = _word_rank_index(language).get(word.lower())
+    if rank is None:
+        return None, None
+    return rank, rank / len(words) * 100.0
