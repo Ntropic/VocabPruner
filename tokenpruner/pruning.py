@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from tokenpruner.architecture import ModelArchitectureReport
+from tokenpruner.hf_cache import (
+    CHECKPOINT_ALLOW_PATTERNS,
+    cached_checkpoint_status,
+    mark_checkpoint_download,
+)
+from tokenpruner.paths import HF_MODELS_DIR
 from tokenpruner.token_lists import compact_token_maps
 
 
@@ -122,9 +128,15 @@ def load_causal_lm(
             return AutoModelForImageTextToText.from_pretrained(
                 model,
                 trust_remote_code=trust_remote_code,
+                cache_dir=HF_MODELS_DIR,
                 **kwargs,
             )
-        return AutoModelForCausalLM.from_pretrained(model, trust_remote_code=trust_remote_code, **kwargs)
+        return AutoModelForCausalLM.from_pretrained(
+            model,
+            trust_remote_code=trust_remote_code,
+            cache_dir=HF_MODELS_DIR,
+            **kwargs,
+        )
     except Exception as exc:
         message = str(exc)
         if "modelopt" in message.lower() or "nvfp4" in message.lower():
@@ -284,22 +296,25 @@ def resolve_checkpoint_source(model: str, trust_remote_code: bool = False) -> Pa
     path = Path(model)
     if path.exists():
         return path
+    status = cached_checkpoint_status(model)
+    if status.complete and status.snapshot_path is not None and status.snapshot_path.exists():
+        return status.snapshot_path
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:
         raise RuntimeError("huggingface_hub is required to download checkpoint shards.") from exc
-    return Path(
+    allow_patterns = CHECKPOINT_ALLOW_PATTERNS + (
+        ("*.py",) if trust_remote_code else ("README.md",)
+    )
+    source = Path(
         snapshot_download(
             model,
-            allow_patterns=[
-                "*.json",
-                "*.safetensors",
-                "*.model",
-                "*.txt",
-                "*.py" if trust_remote_code else "README.md",
-            ],
+            cache_dir=HF_MODELS_DIR,
+            allow_patterns=allow_patterns,
         )
     )
+    mark_checkpoint_download(model, trust_remote_code, source)
+    return source
 
 
 def copy_checkpoint_sidecars(source: Path, output: Path) -> None:

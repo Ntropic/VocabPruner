@@ -7,7 +7,7 @@ target workload. It combines character scripts, symbol presets, dictionaries, an
 ## Commands
 
 - `inspect`: load a tokenizer/model config and report vocabulary metadata.
-- `analyze`: classify vocabularies through the shared cache and print/save diagnostics.
+- `analyze`: classify vocabularies through the shared cache, print diagnostics, and create generated artifacts.
 - `prune`: prune a supported model with compact text-token IDs; safetensors checkpoints are rewritten shard-by-shard without loading the full model.
 
 ## Parameters
@@ -16,8 +16,10 @@ target workload. It combines character scripts, symbol presets, dictionaries, an
 - `--languages`: languages for which TokenPruner stores and checks frequency scores.
 - `--wordfreq-min-zipf`: absolute word frequency cutoff; default/recommended threshold style.
 - `--wordfreq-top-pct`: relative top-percent language vocabulary cutoff; alternative to Zipf.
-- `--show`: display/output mode, e.g. `stats`, `all`, `examples`, `list`, `html`.
-- `--save [PATH]`: filesystem output path for `analyze` and `prune`; omit `PATH` to use a generated path based on the model and policy.
+- `--show`: display mode, e.g. `stats`, `all`, `examples`.
+- `--create`: artifact creation mode, e.g. `list`, `decisions`, `html`.
+- `--save [PATH]`: prune output path or model directory name; omit `PATH` to use a generated name under `pruned_models/`.
+- `--workers`: process workers for token fact creation; cache reuse does not rebuild facts.
 
 - `--keep-script`: allowed Unicode scripts for the character gate.
 - `--symbol-preset`: allowed symbol families such as coding, JSON, mathematics, emoji.
@@ -25,6 +27,26 @@ target workload. It combines character scripts, symbol presets, dictionaries, an
 - `--seed`: deterministic `analyze` sampling/examples.
 - `--trust-remote-code`: trust custom code from Hugging Face model repositories.
 - `--yes`: skip prune confirmation prompts.
+
+`--create list` creates or reuses the threshold-independent token fact list.
+It does not write thresholded decisions and does not require a frequency
+threshold. Existing lists are reused when the stored schema and non-threshold
+settings match. `--create decisions` writes `token_decisions.jsonl`
+for the current threshold settings under `decisions/` and requires a threshold.
+`--create html` writes `wordfreq_viewer.html` into the matching list directory
+and imports the existing `settings.json` and `wordfreq_facts.json` from there.
+It also starts a local HTTP server and prints the URL to open, because browsers
+usually block imported local JSON from `file://`. The viewer shows per-language
+row counts, unique terms, inferred wordfreq dictionary size, and hover details
+with a plot marker. Generated lists are written directly under `lists/`.
+Default `prune` outputs are written under `pruned_models/`, or can be named
+with `--save`.
+
+Downloaded Hugging Face model/config/tokenizer files are cached inside the repo
+under `hf_models/`. TokenPruner writes a small local marker there to distinguish
+analysis-only tokenizer/config downloads from checkpoint downloads, so cache
+completeness can be checked from disk.
+Relative output paths are resolved from the TokenPruner project directory.
 
 ## Example Results
 

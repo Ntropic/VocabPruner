@@ -1,5 +1,7 @@
-models/
-tokenpruner_artifacts/
+hf_models/
+lists/
+decisions/
+pruned_models/
 __pycache__/
 *.py[cod]
 .pytest_cache/

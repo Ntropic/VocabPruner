@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from tokenpruner.hf_cache import mark_analysis_download
+from tokenpruner.paths import HF_MODELS_DIR
+
 
 @dataclass(frozen=True)
 class ModelArchitectureReport:
@@ -29,7 +32,14 @@ def load_model_config(model: str, trust_remote_code: bool = False, **kwargs: Any
             "transformers is required to inspect model architecture. Install project dependencies first."
         ) from exc
 
-    return AutoConfig.from_pretrained(model, trust_remote_code=trust_remote_code, **kwargs)
+    config = AutoConfig.from_pretrained(
+        model,
+        trust_remote_code=trust_remote_code,
+        cache_dir=HF_MODELS_DIR,
+        **kwargs,
+    )
+    mark_analysis_download(model, trust_remote_code)
+    return config
 
 
 def inspect_model_architecture(config: Any) -> ModelArchitectureReport:

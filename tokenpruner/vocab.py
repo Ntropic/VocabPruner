@@ -5,7 +5,9 @@ import os
 from collections.abc import Mapping
 from typing import Any
 
+from tokenpruner.hf_cache import mark_analysis_download
 from tokenpruner.models import TokenRecord
+from tokenpruner.paths import HF_MODELS_DIR
 
 BYTE_FALLBACK_RE = re.compile(r"^<0x[0-9A-Fa-f]{2}>$")
 
@@ -29,12 +31,15 @@ def load_tokenizer(model: str, trust_remote_code: bool = False, **kwargs: Any) -
         ) from exc
 
     transformers_logging.set_verbosity_error()
-    return AutoTokenizer.from_pretrained(
+    tokenizer = AutoTokenizer.from_pretrained(
         model,
         trust_remote_code=trust_remote_code,
         use_fast=True,
+        cache_dir=HF_MODELS_DIR,
         **kwargs,
     )
+    mark_analysis_download(model, trust_remote_code)
+    return tokenizer
 
 
 def tokenizer_records(tokenizer: Any) -> list[TokenRecord]:

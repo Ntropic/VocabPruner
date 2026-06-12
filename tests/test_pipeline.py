@@ -47,3 +47,4 @@ def test_arrays_use_best_rank_percent_for_segment_pass():
 
     assert arrays.best_rank_percent_by_segment[(1, 0)] == 0.01
     assert arrays.segment_wordfreq_passes[(1, 0)] is True
+

@@ -1,15 +1,33 @@
+import shutil
 from pathlib import Path
 
 import pytest
 
 import tokenpruner.cli as cli
+import tokenpruner.pipeline as pipeline
 
 
 @pytest.fixture(autouse=True)
-def allow_pruning_runtime(monkeypatch):
+def allow_pruning_runtime(monkeypatch, tmp_path):
+    lists_dir = tmp_path / "lists"
+    decisions_dir = tmp_path / "decisions"
+    pruned_models_dir = tmp_path / "pruned_models"
+    monkeypatch.setattr(cli, "LISTS_DIR", lists_dir)
+    monkeypatch.setattr(cli, "DECISIONS_DIR", decisions_dir)
+    monkeypatch.setattr(cli, "PRUNED_MODELS_DIR", pruned_models_dir)
+    monkeypatch.setattr(pipeline, "LISTS_DIR", lists_dir)
     monkeypatch.setattr(cli, "missing_pruning_packages", lambda report: ())
     monkeypatch.setattr(cli, "validate_pruning_runtime", lambda report: None)
     monkeypatch.setattr(cli, "prune_safetensors_checkpoint", lambda **kwargs: None)
+    monkeypatch.setattr(
+        cli,
+        "start_html_server",
+        lambda directory: ("http://127.0.0.1:8765/wordfreq_viewer.html", 12345),
+    )
+    yield
+    shutil.rmtree(lists_dir, ignore_errors=True)
+    shutil.rmtree(decisions_dir, ignore_errors=True)
+    shutil.rmtree(pruned_models_dir, ignore_errors=True)
 
 
 class TinyTokenizer:
@@ -86,7 +104,7 @@ def test_analyze_classifies_all(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
-    cli.main(["analyze", "--model", "tiny", "--languages", "en", "--show", "stats"])
+    cli.main(["analyze", "--model", "tiny", "--languages", "en", "--wordfreq-min-zipf", "4", "--show", "stats"])
 
     output = capsys.readouterr().out
     assert "Classified tokens: 6" in output
@@ -107,7 +125,7 @@ def test_analyze_show_stats_prints_stats_only(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
-    cli.main(["analyze", "--model", "tiny", "--show", "stats"])
+    cli.main(["analyze", "--model", "tiny", "--wordfreq-min-zipf", "4", "--show", "stats"])
 
     output = capsys.readouterr().out
     assert "Retained:" in output
@@ -125,6 +143,8 @@ def test_analyze_show_can_be_repeated(monkeypatch, capsys, tmp_path):
             "analyze",
             "--model",
             "tiny",
+            "--wordfreq-min-zipf",
+            "4",
             "--show",
             "stats",
             "--show",
@@ -141,23 +161,106 @@ def test_analyze_show_all_prints_rows(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
-    cli.main(["analyze", "--model", "tiny", "--show", "all"])
+    cli.main(["analyze", "--model", "tiny", "--wordfreq-min-zipf", "4", "--show", "all"])
 
     output = capsys.readouterr().out
     assert "Decisions" in output
     assert "'hello'" in output
 
 
-def test_analyze_show_list_outputs_jsonl(monkeypatch, capsys, tmp_path):
+def test_analyze_create_list_creates_cache_without_decisions(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
-    cli.main(["analyze", "--model", "tiny", "--seed", "1", "--show", "list"])
+    cli.main(["analyze", "--model", "tiny", "--seed", "1", "--create", "list"])
+
+    captured = capsys.readouterr()
+    assert "TokenPruner Sample Report" not in captured.out
+    assert '"token"' not in captured.out
+    assert "List:" in captured.err
+    list_dirs = [path for path in cli.LISTS_DIR.iterdir() if path.is_dir()]
+    assert len(list_dirs) == 1
+    assert (list_dirs[0] / "settings.json").is_file()
+    assert (list_dirs[0] / "token_facts.json").is_file()
+    assert (list_dirs[0] / "wordfreq_facts.json").is_file()
+    assert not list(cli.DECISIONS_DIR.rglob("token_decisions.jsonl"))
+
+
+def test_analyze_create_list_reuses_existing_cache_without_threshold_decisions(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+
+    cli.main(["analyze", "--model", "tiny", "--wordfreq-min-zipf", "8", "--create", "list"])
+    first = capsys.readouterr()
+    monkeypatch.setattr(
+        cli,
+        "load_tokenizer",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("tokenizer should not load")),
+    )
+    cli.main(["analyze", "--model", "tiny", "--wordfreq-min-zipf", "3", "--create", "list"])
+    second = capsys.readouterr()
+
+    assert "List created" in first.err
+    assert "List reused" in second.err
+    assert "Retained:" not in first.out
+    assert "Retained:" not in second.out
+    assert not list(cli.DECISIONS_DIR.rglob("token_decisions.jsonl"))
+
+
+def test_analyze_create_html_reuses_cache_without_loading_tokenizer(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+
+    cli.main(["analyze", "--model", "tiny", "--create", "list"])
+    capsys.readouterr()
+    monkeypatch.setattr(
+        cli,
+        "load_tokenizer",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("tokenizer should not load")),
+    )
+
+    cli.main(["analyze", "--model", "tiny", "--create", "html"])
+
+    captured = capsys.readouterr()
+    assert "List reused" in captured.err
+    assert "HTML:" in captured.out
+    assert "Open: http://127.0.0.1:8765/wordfreq_viewer.html" in captured.out
+
+
+def test_analyze_show_stats_requires_threshold(monkeypatch):
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+
+    try:
+        cli.main(["analyze", "--model", "tiny", "--show", "stats"])
+    except SystemExit as exc:
+        assert "A word frequency threshold is required" in str(exc)
+    else:
+        raise AssertionError("Expected SystemExit")
+
+
+def test_analyze_create_decisions_writes_jsonl_without_printing_it(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+
+    cli.main(["analyze", "--model", "tiny", "--seed", "1", "--wordfreq-min-zipf", "4", "--show", "stats", "--create", "decisions"])
+
+    captured = capsys.readouterr()
+    assert "TokenPruner Sample Report" in captured.out
+    assert '"token"' not in captured.out
+    assert "Decisions:" in captured.err
+    saved_decisions = list(cli.DECISIONS_DIR.rglob("token_decisions.jsonl"))
+    assert saved_decisions
+    assert len(saved_decisions[0].read_text(encoding="utf-8").strip().splitlines()) == 6
+
+
+def test_analyze_accepts_workers(monkeypatch, capsys, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+
+    cli.main(["analyze", "--model", "tiny", "--workers", "1", "--wordfreq-min-zipf", "4", "--show", "stats"])
 
     output = capsys.readouterr().out
-    assert "TokenPruner Sample Report" not in output
-    assert '"token"' in output
-    assert len(output.strip().splitlines()) == 6
+    assert "Classified tokens: 6" in output
 
 
 def test_normalize_show_examples_default_counts():
@@ -203,7 +306,7 @@ def test_analyze_show_examples_prints_decision_buckets(monkeypatch, capsys, tmp_
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
-    cli.main(["analyze", "--model", "tiny", "--show", "examples:2"])
+    cli.main(["analyze", "--model", "tiny", "--wordfreq-min-zipf", "4", "--show", "examples:2"])
 
     output = capsys.readouterr().out
     assert "Show mode: examples" in output
@@ -216,7 +319,7 @@ def test_analyze_show_stats_examples_prints_both(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
-    cli.main(["analyze", "--model", "tiny", "--show", "stats", "examples:2"])
+    cli.main(["analyze", "--model", "tiny", "--wordfreq-min-zipf", "4", "--show", "stats", "examples:2"])
 
     output = capsys.readouterr().out
     assert "Retained:" in output
@@ -237,7 +340,18 @@ def test_analyze_help_does_not_list_example_count(capsys):
     assert "examples:retained=20,pruned=20" in output
 
 
-def test_analyze_save_writes_report_artifacts(monkeypatch, capsys, tmp_path):
+def test_analyze_rejects_save_argument(monkeypatch):
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+
+    try:
+        cli.main(["analyze", "--model", "tiny", "--wordfreq-min-zipf", "4", "--save", "reports"])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("Expected SystemExit")
+
+
+def test_analyze_create_decisions_uses_generated_settings_path(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
@@ -248,71 +362,25 @@ def test_analyze_save_writes_report_artifacts(monkeypatch, capsys, tmp_path):
             "tiny",
             "--seed",
             "1",
+            "--wordfreq-min-zipf",
+            "4",
             "--show",
             "stats",
-            "--save",
-            "reports",
+            "--create",
+            "decisions",
         ]
     )
 
-    output = capsys.readouterr().out
-    saved = Path("reports/token_decisions.jsonl").read_text(encoding="utf-8")
-    assert "Retained:" in output
-    assert len(saved.strip().splitlines()) == 6
-    assert Path("reports/summary.md").exists()
-    assert Path("reports/policy.json").exists()
-
-
-def test_analyze_bare_save_uses_default_artifact_path(monkeypatch, capsys, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
-
-    cli.main(
-        [
-            "analyze",
-            "--model",
-            "tiny/model",
-            "--seed",
-            "1",
-            "--show",
-            "stats",
-            "--save",
-        ]
-    )
-
-    capsys.readouterr()
+    captured = capsys.readouterr()
     expected = (
-        Path("tokenpruner_artifacts")
-        / "analyze"
-        / "tiny-model__scripts-common-inherited-latin__symbols-ascii-punctuation-coding__langs-en__zipf-4__seed-1"
+        cli.DECISIONS_DIR
+        / "tiny__scripts-common-inherited-latin__symbols-ascii-punctuation-coding__langs-en__zipf-4__seed-1"
+        / "token_decisions.jsonl"
     )
-    assert (tmp_path / expected / "token_decisions.jsonl").exists()
-    assert (tmp_path / expected / "summary.md").exists()
-    assert (tmp_path / expected / "policy.json").exists()
-
-
-def test_analyze_show_list_and_save_are_independent(monkeypatch, capsys, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
-
-    cli.main(
-        [
-            "analyze",
-            "--model",
-            "tiny",
-            "--seed",
-            "1",
-            "--show",
-            "list",
-            "--save",
-            "nested/reports",
-        ]
-    )
-
-    output = capsys.readouterr().out
-    saved = Path("nested/reports/token_decisions.jsonl").read_text(encoding="utf-8")
-    assert '"token"' in output
-    assert len(saved.strip().splitlines()) == 6
+    assert '"token"' not in captured.out
+    assert "Decisions:" in captured.err
+    assert expected.exists()
+    assert len(expected.read_text(encoding="utf-8").strip().splitlines()) == 6
 
 
 def test_analyze_show_json_is_rejected(monkeypatch):
@@ -326,19 +394,56 @@ def test_analyze_show_json_is_rejected(monkeypatch):
         raise AssertionError("Expected SystemExit")
 
 
-def test_analyze_show_html_writes_viewer_assets(monkeypatch, capsys, tmp_path):
+def test_analyze_show_list_is_rejected(monkeypatch):
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+
+    try:
+        cli.main(["analyze", "--model", "tiny", "--show", "list"])
+    except SystemExit as exc:
+        assert str(exc) == "Unsupported --show value(s): list"
+    else:
+        raise AssertionError("Expected SystemExit")
+
+
+def test_analyze_create_html_writes_viewer_assets(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
-    cli.main(["analyze", "--model", "tiny", "--show", "html"])
+    cli.main(["analyze", "--model", "tiny", "--create", "html"])
 
-    output = capsys.readouterr().out
-    assert "HTML:" in output
-    html_paths = list(tmp_path.rglob("wordfreq_viewer.html"))
-    data_paths = list(tmp_path.rglob("wordfreq_data.js"))
+    captured = capsys.readouterr()
+    assert "HTML:" in captured.out
+    assert "Open: http://127.0.0.1:8765/wordfreq_viewer.html" in captured.out
+    assert "Server PID: 12345" in captured.err
+    assert "TokenPruner Sample Report" not in captured.out
+    html_paths = list(cli.LISTS_DIR.rglob("wordfreq_viewer.html"))
     assert html_paths
-    assert data_paths
-    assert "TOKENPRUNER_WORDFREQ_DATA" in data_paths[0].read_text(encoding="utf-8")
+    list_dir = html_paths[0].parent
+    assert (list_dir / "settings.json").is_file()
+    assert (list_dir / "token_facts.json").is_file()
+    assert (list_dir / "wordfreq_facts.json").is_file()
+    assert not (list_dir / "wordfreq_data.js").exists()
+    html = html_paths[0].read_text(encoding="utf-8")
+    assert 'fetch("settings.json")' in html
+    assert 'fetch("token_facts.json")' in html
+    assert 'fetch("wordfreq_facts.json")' in html
+    assert 'id="stats"' in html
+    assert "metric.id = 'metric'" in html
+    assert "token words plotted" in html
+    assert 'token "' in html
+    assert "hoverPoint" in html
+    assert "threshold" not in html.lower()
+
+
+def test_analyze_show_html_is_rejected(monkeypatch):
+    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+
+    try:
+        cli.main(["analyze", "--model", "tiny", "--show", "html"])
+    except SystemExit as exc:
+        assert str(exc) == "Unsupported --show value(s): html"
+    else:
+        raise AssertionError("Expected SystemExit")
 
 
 def test_analyze_threshold_change_reuses_same_cache(monkeypatch, capsys, tmp_path):
@@ -350,42 +455,44 @@ def test_analyze_threshold_change_reuses_same_cache(monkeypatch, capsys, tmp_pat
     cli.main(["analyze", "--model", "tiny", "--wordfreq-min-zipf", "3", "--show", "stats"])
     second = capsys.readouterr()
 
-    assert "cache created" in first.err
-    assert "cache reused" in second.err
-    cache_dirs = [path for path in (tmp_path / "tokenpruner_artifacts" / "cache").iterdir() if path.is_dir()]
-    assert len(cache_dirs) == 1
-    assert "zipf-8" not in cache_dirs[0].name
-    assert "zipf-3" not in cache_dirs[0].name
+    assert "List created" in first.err
+    assert "List reused" in second.err
+    list_dirs = [path for path in cli.LISTS_DIR.iterdir() if path.is_dir()]
+    assert len(list_dirs) == 1
+    assert "zipf-8" not in list_dirs[0].name
+    assert "zipf-3" not in list_dirs[0].name
 
 
 def test_analyze_without_save_writes_cache_only(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
-    cli.main(["analyze", "--model", "tiny", "--show", "stats"])
+    cli.main(["analyze", "--model", "tiny", "--wordfreq-min-zipf", "4", "--show", "stats"])
 
     capsys.readouterr()
-    expected = tmp_path / "tokenpruner_artifacts" / "cache"
-    assert expected.exists()
+    assert cli.LISTS_DIR.exists()
+    assert any((path / "settings.json").is_file() for path in cli.LISTS_DIR.iterdir() if path.is_dir())
     assert not list(tmp_path.rglob("retained_token_ids.txt"))
     assert not list(tmp_path.rglob("pruned_token_ids.txt"))
 
 
-def test_show_list_uses_default_cache_path(monkeypatch, capsys, tmp_path):
+def test_create_list_uses_default_cache_path(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
-    cli.main(["analyze", "--model", "tiny/model", "--languages", "en", "--show", "list"])
+    cli.main(["analyze", "--model", "tiny/model", "--languages", "en", "--create", "list"])
 
-    output = capsys.readouterr().out
+    captured = capsys.readouterr()
     expected = (
-        Path("tokenpruner_artifacts")
-        / "cache"
+        cli.LISTS_DIR
         / "tiny-model__scripts-common-inherited-latin__symbols-ascii-punctuation-coding__langs-en"
     )
-    assert '"token"' in output
-    assert (tmp_path / expected / "token_facts.json").exists()
-    assert (tmp_path / expected / "wordfreq_facts.json").exists()
+    assert '"token"' not in captured.out
+    assert "List:" in captured.err
+    assert (expected / "settings.json").exists()
+    assert (expected / "token_facts.json").exists()
+    assert (expected / "wordfreq_facts.json").exists()
+    assert not list(cli.DECISIONS_DIR.rglob("token_decisions.jsonl"))
 
 
 def test_prune_refuses_separate_smaller_vocabulary_before_loading_weights(monkeypatch, tmp_path):
@@ -413,6 +520,8 @@ def test_prune_refuses_separate_smaller_vocabulary_before_loading_weights(monkey
                 "prune",
                 "--model",
                 "tiny",
+                "--wordfreq-min-zipf",
+                "4",
                 "--save",
                 str(tmp_path / "out"),
             ]
@@ -438,6 +547,8 @@ def test_prune_confirmation_decline_avoids_loading_weights(monkeypatch, capsys, 
             "prune",
             "--model",
             "tiny",
+            "--wordfreq-min-zipf",
+            "4",
             "--save",
             str(tmp_path / "out"),
         ]
@@ -465,14 +576,15 @@ def test_prune_without_save_path_uses_default_artifact_path(monkeypatch, capsys,
             "prune",
             "--model",
             "tiny/model",
+            "--wordfreq-min-zipf",
+            "4",
         ]
     )
 
     output = capsys.readouterr().out
     expected = (
-        Path("tokenpruner_artifacts")
-        / "prune"
-        / "tiny-model__scripts-common-inherited-latin__symbols-ascii-punctuation-coding__langs-en__zipf-4"
+        cli.PRUNED_MODELS_DIR
+        /  "tiny-model__scripts-common-inherited-latin__symbols-ascii-punctuation-coding__langs-en__zipf-4"
     )
     assert f"Save: {expected}" in output
     assert "Pruning cancelled." in output
@@ -493,6 +605,8 @@ def test_prune_defaults_to_summary_and_can_show_examples(monkeypatch, capsys, tm
             "prune",
             "--model",
             "tiny",
+            "--wordfreq-min-zipf",
+            "4",
             "--save",
             str(tmp_path / "out"),
             "--show",
@@ -524,6 +638,8 @@ def test_prune_default_show_is_stats(monkeypatch, capsys, tmp_path):
             "prune",
             "--model",
             "tiny",
+            "--wordfreq-min-zipf",
+            "4",
             "--save",
             str(tmp_path / "out"),
         ]
@@ -561,6 +677,8 @@ def test_prune_yes_skips_confirmation(monkeypatch, capsys, tmp_path):
             "prune",
             "--model",
             "tiny",
+            "--wordfreq-min-zipf",
+            "4",
             "--save",
             str(output_dir),
             "--yes",
@@ -604,6 +722,8 @@ def test_prune_uses_streaming_backend_without_loading_full_model(monkeypatch, ca
             "prune",
             "--model",
             "tiny",
+            "--wordfreq-min-zipf",
+            "4",
             "--save",
             str(output_dir),
             "--yes",

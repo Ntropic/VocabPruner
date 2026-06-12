@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,6 +12,7 @@ import numpy as np
 
 from tokenpruner.dictionaries import dictionary_matches, load_dictionaries
 from tokenpruner.models import DictionaryMatch, ScriptProfile, TokenRecord, TokenScore, WordfreqMatch
+from tokenpruner.paths import LISTS_DIR
 from tokenpruner.scoring import (
     ScoreConfig,
     character_gate,
@@ -37,7 +40,7 @@ class PipelineResult:
     cache_reused: bool
     token_facts: dict[str, Any]
     wordfreq_facts: dict[str, Any]
-    arrays: "PipelineArrays"
+    arrays: "PipelineArrays | None"
 
 
 @dataclass(frozen=True)
@@ -56,91 +59,241 @@ class PipelineArrays:
     segment_wordfreq_passes: dict[tuple[int, int], bool]
 
 
-def should_show_html(show: list[str] | tuple[str, ...] | set[str]) -> bool:
-    return "html" in set(show)
-
-
-def write_wordfreq_html(cache_dir: Path, config: ScoreConfig) -> Path:
-    wordfreq_path = cache_dir / "wordfreq_facts.json"
-    policy_path = cache_dir / "policy.json"
-    wordfreq_facts = json.loads(wordfreq_path.read_text(encoding="utf-8")) if wordfreq_path.exists() else {"columns": {}}
-    policy = json.loads(policy_path.read_text(encoding="utf-8")) if policy_path.exists() else {}
-    data = {
-        "policy": policy,
-        "threshold": {
-            "wordfreq_min_zipf": config.wordfreq_min_zipf,
-            "wordfreq_top_pct": config.wordfreq_top_pct,
-        },
-        "wordfreq": wordfreq_facts.get("columns", {}),
-        "language_rows": sorted_language_wordfreq_rows(wordfreq_facts),
-    }
-    data_path = cache_dir / "wordfreq_data.js"
-    html_path = cache_dir / "wordfreq_viewer.html"
-    data_path.write_text(
-        "window.TOKENPRUNER_WORDFREQ_DATA = "
-        + json.dumps(data, ensure_ascii=False, separators=(",", ":"))
-        + ";\n",
+def write_wordfreq_html(
+    cache_dir: Path,
+    config: ScoreConfig,
+    output_dir: str | Path | None = None,
+    *,
+    wordfreq_min_zipf: float | None = None,
+    wordfreq_top_pct: float | None = None,
+) -> Path:
+    destination = Path(output_dir) if output_dir is not None else cache_dir
+    destination.mkdir(parents=True, exist_ok=True)
+    html_path = destination / "wordfreq_viewer.html"
+    html_path.write_text(
+        _wordfreq_html(
+            settings_path=_viewer_relative_path(destination, cache_dir / "settings.json"),
+            token_path=_viewer_relative_path(destination, cache_dir / "token_facts.json"),
+            wordfreq_path=_viewer_relative_path(destination, cache_dir / "wordfreq_facts.json"),
+        ),
         encoding="utf-8",
     )
-    html_path.write_text(_wordfreq_html(), encoding="utf-8")
     return html_path
 
 
-def _wordfreq_html() -> str:
-    return """<!doctype html>
+def _viewer_relative_path(source_dir: Path, target: Path) -> str:
+    return Path(os.path.relpath(target.resolve(), source_dir.resolve())).as_posix()
+
+
+def _wordfreq_html(
+    *,
+    settings_path: str,
+    token_path: str,
+    wordfreq_path: str,
+) -> str:
+    settings_url = json.dumps(settings_path)
+    token_url = json.dumps(token_path)
+    wordfreq_url = json.dumps(wordfreq_path)
+    return f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TokenPruner Wordfreq Viewer</title>
-  <script src="wordfreq_data.js"></script>
   <style>
-    body { margin: 0; font-family: system-ui, sans-serif; background: #101418; color: #f4f7fb; }
-    header { display: flex; gap: 16px; align-items: center; padding: 14px 18px; border-bottom: 1px solid #2b333d; }
-    h1 { font-size: 18px; margin: 0; font-weight: 650; }
-    select { background: #19212a; color: #f4f7fb; border: 1px solid #536171; border-radius: 6px; padding: 6px 9px; }
-    main { padding: 18px; }
-    canvas { width: 100%; height: 560px; background: #151b22; border: 1px solid #2b333d; border-radius: 6px; display: block; }
-    #tip { min-height: 28px; padding-top: 12px; color: #cbd5e1; font-size: 14px; }
+    body {{ margin: 0; font-family: system-ui, sans-serif; background: #101418; color: #f4f7fb; }}
+    header {{ display: flex; gap: 16px; align-items: center; padding: 14px 18px; border-bottom: 1px solid #2b333d; flex-wrap: wrap; }}
+    h1 {{ font-size: 18px; margin: 0; font-weight: 650; }}
+    select {{ background: #19212a; color: #f4f7fb; border: 1px solid #536171; border-radius: 6px; padding: 6px 9px; }}
+    main {{ padding: 18px; }}
+    canvas {{ width: 100%; height: 560px; background: #151b22; border: 1px solid #2b333d; border-radius: 6px; display: block; }}
+    #stats {{ display: flex; gap: 18px; flex-wrap: wrap; color: #cbd5e1; font-size: 13px; }}
+    #tip {{ min-height: 28px; padding-top: 12px; color: #cbd5e1; font-size: 14px; }}
   </style>
 </head>
 <body>
   <header>
     <h1>Wordfreq Distribution</h1>
     <select id="language"></select>
+    <div id="stats"></div>
   </header>
   <main>
     <canvas id="chart"></canvas>
     <div id="tip"></div>
   </main>
   <script>
-    const data = window.TOKENPRUNER_WORDFREQ_DATA || {wordfreq: {}, threshold: {}};
-    const cols = data.wordfreq || {};
-    const languages = [...new Set(cols.language || [])].sort();
+    let settings = {{}};
+    let tokenCols = {{}};
+    let cols = {{}};
+    let languages = [];
+    let plotted = [];
+    let hoverPoint = null;
     const select = document.getElementById('language');
+    const metric = document.createElement('select');
+    metric.id = 'metric';
+    for (const [value, label] of [
+      ['zipf', 'Zipf score'],
+      ['rank_percent', 'Top percent'],
+      ['rank', 'Dictionary rank'],
+    ]) {{
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      metric.append(option);
+    }}
+    select.after(metric);
+    const stats = document.getElementById('stats');
     const canvas = document.getElementById('chart');
     const tip = document.getElementById('tip');
     const ctx = canvas.getContext('2d');
 
-    for (const language of languages) {
-      const option = document.createElement('option');
-      option.value = language;
-      option.textContent = language;
-      select.append(option);
-    }
+    async function loadData() {{
+      tip.textContent = 'Loading wordfreq list...';
+      const [settingsResponse, tokenResponse, wordfreqResponse] = await Promise.all([
+        fetch({settings_url}),
+        fetch({token_url}),
+        fetch({wordfreq_url}),
+      ]);
+      if (!settingsResponse.ok || !tokenResponse.ok || !wordfreqResponse.ok) {{
+        throw new Error(`settings ${{settingsResponse.status}}, token ${{tokenResponse.status}}, wordfreq ${{wordfreqResponse.status}}`);
+      }}
+      settings = await settingsResponse.json();
+      const tokenFacts = await tokenResponse.json();
+      const wordfreq = await wordfreqResponse.json();
+      tokenCols = tokenFacts.columns || {{}};
+      cols = wordfreq.columns || {{}};
+      languages = [...new Set(cols.language || [])].sort();
+      select.replaceChildren();
+      for (const language of languages) {{
+        const option = document.createElement('option');
+        option.value = language;
+        option.textContent = language;
+        select.append(option);
+      }}
+      if (languages.length) {{
+        select.value = languages[0];
+      }}
+      rebuildPlot();
+      updateStats();
+      draw();
+    }}
 
-    function rows(language) {
-      return (data.language_rows && data.language_rows[language]) || [];
-    }
+    function row(index) {{
+      return {{
+        tokenId: cols.token_id[index],
+        term: cols.term[index],
+        mode: cols.mode[index],
+        zipf: cols.zipf[index],
+        rank: cols.rank[index],
+        rankPercent: cols.rank_percent[index],
+      }};
+    }}
 
-    function pass(row) {
-      if (data.threshold.wordfreq_top_pct != null) {
-        return row.rankPercent != null && row.rankPercent <= data.threshold.wordfreq_top_pct;
-      }
-      return row.zipf >= data.threshold.wordfreq_min_zipf;
-    }
+    function tokenTextById() {{
+      const lookup = new Map();
+      for (let index = 0; index < (tokenCols.token_id || []).length; index++) {{
+        const text = tokenCols.decoded_text[index] || tokenCols.raw_token[index] || String(tokenCols.token_id[index]);
+        lookup.set(tokenCols.token_id[index], text);
+      }}
+      return lookup;
+    }}
 
-    function draw() {
+    function metricValue(item) {{
+      if (metric.value === 'zipf') return item.zipf;
+      if (metric.value === 'rank_percent') return item.rankPercent;
+      return item.rank;
+    }}
+
+    function metricIsHigherBetter() {{
+      return metric.value === 'zipf';
+    }}
+
+    function metricLabel() {{
+      return metric.options[metric.selectedIndex].textContent;
+    }}
+
+    function metricDisplay(value) {{
+      if (value == null) return '-';
+      if (metric.value === 'zipf') return value.toFixed(3);
+      if (metric.value === 'rank_percent') return `${{value.toFixed(4)}}%`;
+      return value.toLocaleString();
+    }}
+
+    function better(a, b) {{
+      if (a == null) return false;
+      if (b == null) return true;
+      return metricIsHigherBetter() ? a > b : a < b;
+    }}
+
+    function rebuildPlot() {{
+      const language = select.value;
+      const tokens = tokenTextById();
+      const byToken = new Map();
+      for (let index = 0; index < (cols.language || []).length; index++) {{
+        if (cols.language[index] !== language) continue;
+        const item = row(index);
+        const value = metricValue(item);
+        if (value == null) continue;
+        const tokenId = item.tokenId;
+        if (!byToken.has(tokenId)) {{
+          byToken.set(tokenId, {{
+            tokenId,
+            token: tokens.get(tokenId) || String(tokenId),
+            bestValue: null,
+            matches: new Map(),
+          }});
+        }}
+        const group = byToken.get(tokenId);
+        if (better(value, group.bestValue)) group.bestValue = value;
+        const key = `${{item.term}}\\u0000${{item.mode}}`;
+        const previous = group.matches.get(key);
+        if (!previous || better(value, metricValue(previous))) group.matches.set(key, item);
+      }}
+      plotted = [...byToken.values()]
+        .map(group => ({{
+          ...group,
+          matches: [...group.matches.values()].sort((a, b) => {{
+            const av = metricValue(a);
+            const bv = metricValue(b);
+            return metricIsHigherBetter() ? bv - av : av - bv;
+          }}),
+        }}))
+        .filter(group => group.bestValue != null)
+        .sort((a, b) => metricIsHigherBetter() ? b.bestValue - a.bestValue : a.bestValue - b.bestValue);
+    }}
+
+    function dictionarySize(language) {{
+      for (let index = 0; index < (cols.language || []).length; index++) {{
+        if (cols.language[index] !== language) continue;
+        const rank = cols.rank[index];
+        const pct = cols.rank_percent[index];
+        if (rank != null && pct != null && pct > 0) {{
+          return Math.round(rank * 100 / pct);
+        }}
+      }}
+      return null;
+    }}
+
+    function updateStats() {{
+      const language = select.value;
+      const totalRows = (cols.language || []).length;
+      const languageRows = (cols.language || []).filter(value => value === language).length;
+      const uniqueMatchedWords = new Set(plotted.flatMap(item => item.matches.map(match => match.term))).size;
+      const dictionaryRows = dictionarySize(language);
+      const settingsText = settings.settings
+        ? `scripts ${{settings.settings.keep_scripts.join(', ')}} | symbols ${{settings.settings.symbol_presets.join(', ')}}`
+        : '';
+      stats.textContent = [
+        `${{plotted.length.toLocaleString()}} token words plotted`,
+        `${{uniqueMatchedWords.toLocaleString()}} matched words`,
+        `${{languageRows.toLocaleString()}} match rows for ${{language || '-'}}`,
+        `${{totalRows.toLocaleString()}} total match rows`,
+        dictionaryRows == null ? 'dictionary size unknown' : `${{dictionaryRows.toLocaleString()}} wordfreq dictionary entries`,
+        settingsText,
+      ].filter(Boolean).join(' | ');
+    }}
+
+    function draw() {{
       const deviceRatio = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
       canvas.width = Math.max(1, Math.floor(rect.width * deviceRatio));
@@ -148,42 +301,87 @@ def _wordfreq_html() -> str:
       ctx.setTransform(deviceRatio, 0, 0, deviceRatio, 0, 0);
       const w = rect.width, h = rect.height, pad = 42;
       ctx.clearRect(0, 0, w, h);
-      const list = rows(select.value);
       ctx.strokeStyle = '#334155';
       ctx.strokeRect(pad, pad, w - pad * 1.5, h - pad * 1.7);
-      if (!list.length) {
-        tip.textContent = 'No wordfreq rows for this language.';
+      if (!plotted.length) {{
+        tip.textContent = 'No matched token words for this language and metric.';
         return;
-      }
-      const maxZipf = Math.max(...list.map(row => row.zipf), 1);
-      const sampleCount = Math.min(600, list.length);
+      }}
+      const values = plotted.map(item => item.bestValue);
+      const minValue = Math.min(...values);
+      const maxValue = Math.max(...values);
+      const span = Math.max(1e-9, maxValue - minValue);
+      const sampleCount = Math.min(600, plotted.length);
+      const points = [];
       ctx.beginPath();
-      for (let i = 0; i < sampleCount; i++) {
-        const source = Math.floor(i * (list.length - 1) / Math.max(1, sampleCount - 1));
+      for (let i = 0; i < sampleCount; i++) {{
+        const source = Math.floor(i * (plotted.length - 1) / Math.max(1, sampleCount - 1));
+        const item = plotted[source];
+        const normalized = metricIsHigherBetter()
+          ? (item.bestValue - minValue) / span
+          : (maxValue - item.bestValue) / span;
         const x = pad + (i / Math.max(1, sampleCount - 1)) * (w - pad * 1.5);
-        const y = h - pad * 0.7 - (list[source].zipf / maxZipf) * (h - pad * 1.7);
+        const y = h - pad * 0.7 - normalized * (h - pad * 1.7);
+        points.push({{x, y, item}});
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      }
+      }}
       ctx.strokeStyle = '#5eead4';
       ctx.lineWidth = 2;
       ctx.stroke();
-      tip.textContent = `${select.value}: ${list.length.toLocaleString()} rows`;
-    }
+      if (hoverPoint) {{
+        const point = points.reduce((best, item) =>
+          Math.abs(item.x - hoverPoint.x) < Math.abs(best.x - hoverPoint.x) ? item : best
+        , points[0]);
+        ctx.strokeStyle = '#facc15';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(point.x, pad);
+        ctx.lineTo(point.x, h - pad * 0.7);
+        ctx.stroke();
+        ctx.fillStyle = '#facc15';
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }}
+      tip.textContent = `${{select.value}} | ${{metricLabel()}} | ${{plotted.length.toLocaleString()}} token words`;
+    }}
 
-    canvas.addEventListener('mousemove', event => {
-      const list = rows(select.value);
-      if (!list.length) return;
+    canvas.addEventListener('mousemove', event => {{
+      if (!plotted.length) return;
       const rect = canvas.getBoundingClientRect();
       const pad = 42;
       const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left - pad) / (rect.width - pad * 1.5)));
-      const row = list[Math.min(list.length - 1, Math.max(0, Math.round(ratio * (list.length - 1))))];
-      const rank = row.rank == null ? '-' : row.rank.toLocaleString();
-      const pct = row.rankPercent == null ? '-' : `${row.rankPercent.toFixed(4)}%`;
-      tip.textContent = `${row.term} | ${select.value} | zipf ${row.zipf.toFixed(3)} | rank ${rank} | top ${pct} | ${pass(row) ? 'passes' : 'fails'} | ${row.mode}`;
-    });
-    select.addEventListener('change', draw);
+      const group = plotted[Math.min(plotted.length - 1, Math.max(0, Math.round(ratio * (plotted.length - 1))))];
+      const matches = group.matches.slice(0, 8).map(match =>
+        `${{match.term}} (${{match.mode}}, ${{metricDisplay(metricValue(match))}})`
+      ).join('; ');
+      hoverPoint = {{x: event.clientX - rect.left}};
+      draw();
+      tip.textContent = `token "${{group.token}}" | best ${{metricLabel()}} ${{metricDisplay(group.bestValue)}} | matches: ${{matches}}`;
+    }});
+    canvas.addEventListener('mouseleave', () => {{
+      hoverPoint = null;
+      draw();
+    }});
+    select.addEventListener('change', () => {{
+      hoverPoint = null;
+      rebuildPlot();
+      updateStats();
+      draw();
+    }});
+    metric.addEventListener('change', () => {{
+      hoverPoint = null;
+      rebuildPlot();
+      updateStats();
+      draw();
+    }});
     window.addEventListener('resize', draw);
-    draw();
+    loadData().catch(error => {{
+      const fileHint = location.protocol === 'file:'
+        ? ' Browsers often block imported local JSON from file://; open this directory through a local HTTP server.'
+        : '';
+      tip.textContent = `Could not load list data: ${{error}}.${{fileHint}}`;
+    }});
   </script>
 </body>
 </html>
@@ -196,19 +394,23 @@ def run_token_pipeline(
     config: ScoreConfig,
     cache_root: str | Path | None = None,
     records: list[TokenRecord],
+    workers: int = 1,
+    derive_decisions: bool = True,
     progress: bool = False,
 ) -> PipelineResult:
+    if workers < 1:
+        raise ValueError("workers must be at least 1")
     cache_dir = token_cache_dir(model, config, cache_root=cache_root)
-    policy = cache_policy(model, config)
-    cached = load_cached_facts(cache_dir, policy)
+    settings = list_settings(model, config)
+    cached = load_cached_facts(cache_dir, settings)
     cache_reused = cached is not None
     if cached is None:
-        token_facts, wordfreq_facts = build_token_facts(records, config, progress=progress)
-        write_cached_facts(cache_dir, policy, token_facts, wordfreq_facts)
+        token_facts, wordfreq_facts = build_token_facts(records, config, workers=workers, progress=progress)
+        write_cached_facts(cache_dir, settings, token_facts, wordfreq_facts)
     else:
         token_facts, wordfreq_facts = cached
-    arrays = arrays_from_facts(token_facts, wordfreq_facts, config)
-    scores = derive_scores(records, token_facts, wordfreq_facts, config, arrays)
+    arrays = arrays_from_facts(token_facts, wordfreq_facts, config) if derive_decisions else None
+    scores = derive_scores(records, token_facts, wordfreq_facts, config, arrays) if arrays is not None else []
     retained_ids = [score.token.token_id for score in scores if score.status in {"protected", "retain_candidate"}]
     pruned_ids = [score.token.token_id for score in scores if score.status == "non_retain_candidate"]
     return PipelineResult(
@@ -226,11 +428,11 @@ def run_token_pipeline(
 
 
 def token_cache_dir(model: str, config: ScoreConfig, cache_root: str | Path | None = None) -> Path:
-    root = Path(cache_root) if cache_root is not None else Path("tokenpruner_artifacts") / "cache"
-    return root / compact_policy_slug(model, config, include_threshold=False)
+    root = Path(cache_root) if cache_root is not None else LISTS_DIR
+    return root / compact_settings_slug(model, config, include_threshold=False)
 
 
-def compact_policy_slug(model: str, config: ScoreConfig, include_threshold: bool = True) -> str:
+def compact_settings_slug(model: str, config: ScoreConfig, include_threshold: bool = True) -> str:
     parts = [
         model_slug(model),
         f"scripts-{value_slug(sorted(config.keep_scripts))}",
@@ -244,11 +446,11 @@ def compact_policy_slug(model: str, config: ScoreConfig, include_threshold: bool
     return "__".join(parts)
 
 
-def cache_policy(model: str, config: ScoreConfig) -> dict[str, Any]:
+def list_settings(model: str, config: ScoreConfig) -> dict[str, Any]:
     return {
         "schema_version": CACHE_SCHEMA_VERSION,
         "model": model,
-        "policy": {
+        "settings": {
             "keep_scripts": sorted(config.keep_scripts),
             "symbol_presets": compact_symbol_values(config.symbol_presets),
             "languages": list(config.languages),
@@ -262,17 +464,17 @@ def cache_policy(model: str, config: ScoreConfig) -> dict[str, Any]:
     }
 
 
-def load_cached_facts(cache_dir: Path, policy: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    policy_path = cache_dir / "policy.json"
+def load_cached_facts(cache_dir: Path, settings: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    settings_path = cache_dir / "settings.json"
     token_path = cache_dir / "token_facts.json"
     wordfreq_path = cache_dir / "wordfreq_facts.json"
-    if not policy_path.exists() or not token_path.exists() or not wordfreq_path.exists():
+    if not settings_path.exists() or not token_path.exists() or not wordfreq_path.exists():
         return None
     try:
-        cached_policy = json.loads(policy_path.read_text(encoding="utf-8"))
+        cached_settings = json.loads(settings_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
-    if cached_policy != policy:
+    if cached_settings != settings:
         return None
     return (
         json.loads(token_path.read_text(encoding="utf-8")),
@@ -282,12 +484,12 @@ def load_cached_facts(cache_dir: Path, policy: dict[str, Any]) -> tuple[dict[str
 
 def write_cached_facts(
     cache_dir: Path,
-    policy: dict[str, Any],
+    settings: dict[str, Any],
     token_facts: dict[str, Any],
     wordfreq_facts: dict[str, Any],
 ) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
-    (cache_dir / "policy.json").write_text(json.dumps(policy, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (cache_dir / "settings.json").write_text(json.dumps(settings, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (cache_dir / "token_facts.json").write_text(json.dumps(token_facts, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
     (cache_dir / "wordfreq_facts.json").write_text(json.dumps(wordfreq_facts, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
 
@@ -295,6 +497,7 @@ def write_cached_facts(
 def build_token_facts(
     records: list[TokenRecord],
     config: ScoreConfig,
+    workers: int = 1,
     progress: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     dictionaries = load_dictionaries(
@@ -330,26 +533,68 @@ def build_token_facts(
         "rank": [],
         "rank_percent": [],
     }
-    iterable = _progress(records, progress=progress, total=len(records))
-    for record in iterable:
-        fact = deterministic_token_fact(record, config, dictionaries)
+    facts = _token_fact_rows(records, config, dictionaries, workers=workers, progress=progress)
+    for record, fact, wordfreq_rows in facts:
         for key, value in fact.items():
             token_columns[key].append(value)
-        if fact["retain_candidate"] and not fact["protected"]:
-            for segment_index, segment in enumerate(fact["evidence_segments"]):
-                for diagnostic in wordfreq_diagnostics(segment, list(config.languages)):
-                    wordfreq_columns["token_id"].append(record.token_id)
-                    wordfreq_columns["segment_index"].append(segment_index)
-                    wordfreq_columns["language"].append(diagnostic.language)
-                    wordfreq_columns["term"].append(diagnostic.term)
-                    wordfreq_columns["mode"].append(diagnostic.mode)
-                    wordfreq_columns["zipf"].append(diagnostic.frequency)
-                    wordfreq_columns["rank"].append(diagnostic.rank)
-                    wordfreq_columns["rank_percent"].append(diagnostic.rank_percent)
+        for row in wordfreq_rows:
+            for key, value in row.items():
+                wordfreq_columns[key].append(value)
     return (
         {"schema_version": CACHE_SCHEMA_VERSION, "columns": token_columns},
         {"schema_version": CACHE_SCHEMA_VERSION, "columns": wordfreq_columns},
     )
+
+
+def _token_fact_rows(
+    records: list[TokenRecord],
+    config: ScoreConfig,
+    dictionaries: dict[str, set[str]],
+    workers: int,
+    progress: bool,
+) -> list[tuple[TokenRecord, dict[str, Any], list[dict[str, Any]]]]:
+    if workers == 1 or len(records) <= 1:
+        return [
+            _token_fact_row(record, config, dictionaries)
+            for record in _progress(records, progress=progress, total=len(records))
+        ]
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        rows = executor.map(
+            _token_fact_row_from_args,
+            ((record, config, dictionaries) for record in records),
+            chunksize=max(1, len(records) // (workers * 8)),
+        )
+        return list(_progress(rows, progress=progress, total=len(records)))
+
+
+def _token_fact_row_from_args(args) -> tuple[TokenRecord, dict[str, Any], list[dict[str, Any]]]:
+    record, config, dictionaries = args
+    return _token_fact_row(record, config, dictionaries)
+
+
+def _token_fact_row(
+    record: TokenRecord,
+    config: ScoreConfig,
+    dictionaries: dict[str, set[str]],
+) -> tuple[TokenRecord, dict[str, Any], list[dict[str, Any]]]:
+    fact = deterministic_token_fact(record, config, dictionaries)
+    wordfreq_rows: list[dict[str, Any]] = []
+    if fact["retain_candidate"] and not fact["protected"]:
+        for segment_index, segment in enumerate(fact["evidence_segments"]):
+            for diagnostic in wordfreq_diagnostics(segment, list(config.languages)):
+                wordfreq_rows.append(
+                    {
+                        "token_id": record.token_id,
+                        "segment_index": segment_index,
+                        "language": diagnostic.language,
+                        "term": diagnostic.term,
+                        "mode": diagnostic.mode,
+                        "zipf": diagnostic.frequency,
+                        "rank": diagnostic.rank,
+                        "rank_percent": diagnostic.rank_percent,
+                    }
+                )
+    return record, fact, wordfreq_rows
 
 
 def deterministic_token_fact(record: TokenRecord, config: ScoreConfig, dictionaries: dict[str, set[str]]) -> dict[str, Any]:
@@ -438,31 +683,6 @@ def arrays_from_facts(token_facts: dict[str, Any], wordfreq_facts: dict[str, Any
         best_rank_percent_by_segment=best_rank_percent,
         segment_wordfreq_passes=segment_passes,
     )
-
-
-def sorted_language_wordfreq_rows(wordfreq_facts: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-    columns = wordfreq_facts.get("columns", {})
-    languages = np.asarray(columns.get("language", []), dtype=object)
-    terms = np.asarray(columns.get("term", []), dtype=object)
-    modes = np.asarray(columns.get("mode", []), dtype=object)
-    zipf = np.asarray(columns.get("zipf", []), dtype=np.float64)
-    ranks = np.asarray(columns.get("rank", []), dtype=object)
-    rank_percent = np.asarray(columns.get("rank_percent", []), dtype=object)
-    rows: dict[str, list[dict[str, Any]]] = {}
-    for language in sorted(set(str(value) for value in languages)):
-        indexes = np.flatnonzero(languages == language)
-        sorted_indexes = indexes[np.argsort(zipf[indexes])[::-1]]
-        rows[language] = [
-            {
-                "term": str(terms[index]),
-                "mode": str(modes[index]),
-                "zipf": float(zipf[index]),
-                "rank": None if ranks[index] is None else int(ranks[index]),
-                "rankPercent": None if rank_percent[index] is None else float(rank_percent[index]),
-            }
-            for index in sorted_indexes
-        ]
-    return rows
 
 
 def _best_by_segment(token_ids: np.ndarray, segment_indexes: np.ndarray, values: np.ndarray, reducer) -> dict[tuple[int, int], float]:

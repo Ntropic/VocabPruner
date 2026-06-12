@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
 
 from tokenpruner.architecture import inspect_model_architecture, load_model_config, render_model_architecture
+from tokenpruner.paths import DECISIONS_DIR, LISTS_DIR, PROJECT_ROOT, PRUNED_MODELS_DIR
 from tokenpruner.pipeline import (
-    compact_policy_slug,
+    PipelineResult,
+    compact_settings_slug,
+    list_settings,
     compact_symbol_values,
+    load_cached_facts,
     run_token_pipeline,
-    should_show_html,
+    token_cache_dir,
     write_wordfreq_html,
 )
 from tokenpruner.pruning import (
@@ -27,12 +31,9 @@ from tokenpruner.pruning import (
 )
 from tokenpruner.reports import (
     ExampleCounts,
-    filter_scores,
     render_jsonl,
-    render_markdown,
     render_plain_text,
     should_show_examples,
-    should_show_list,
     should_show_rows,
 )
 from tokenpruner.scoring import ScoreConfig
@@ -42,6 +43,11 @@ from tokenpruner.token_lists import (
 from tokenpruner.vocab import load_tokenizer, tokenizer_records, vocabulary_stats
 
 DEFAULT_SAVE = "__tokenpruner_default_save__"
+
+
+def default_workers() -> int:
+    cpu_count = os.cpu_count() or 1
+    return max(1, cpu_count - 2)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,10 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     analyze_parser = subparsers.add_parser("analyze", help="Classify tokenizer tokens through the shared cached pipeline.")
     analyze_parser.add_argument("--model", required=True, help="Hugging Face model ID or local tokenizer path.")
-    add_policy_arguments(analyze_parser)
+    add_settings_arguments(analyze_parser)
     analyze_parser.add_argument("--seed", type=int, default=13)
+    add_worker_argument(analyze_parser)
     add_show_argument(analyze_parser)
-    add_save_argument(analyze_parser, "Path for analyze report artifacts.")
+    add_create_argument(analyze_parser)
     analyze_parser.add_argument("--trust-remote-code", action="store_true")
 
     prune_parser = subparsers.add_parser(
@@ -74,19 +81,30 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip the pruning confirmation prompt.",
     )
-    add_policy_arguments(prune_parser)
+    add_settings_arguments(prune_parser)
+    add_worker_argument(prune_parser)
     add_show_argument(prune_parser)
+    add_create_argument(prune_parser)
     prune_parser.add_argument("--trust-remote-code", action="store_true")
     return parser
 
 
-def add_policy_arguments(parser: argparse.ArgumentParser) -> None:
+def add_settings_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--keep-script", nargs="+", default=["Latin", "Common", "Inherited"])
     parser.add_argument("--symbol-preset", nargs="+", default=["coding", "ascii-punctuation"])
     parser.add_argument("--dictionary", action="append", default=[], help="Custom dictionary text file.")
     parser.add_argument("--languages", nargs="+", default=["en"], help="Languages for word frequency scoring.")
     parser.add_argument("--wordfreq-min-zipf", type=float)
     parser.add_argument("--wordfreq-top-pct", type=float)
+
+
+def add_worker_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=default_workers(),
+        help="Process workers for token fact creation. Defaults to CPU count minus 2.",
+    )
 
 
 def add_save_argument(parser: argparse.ArgumentParser, help_text: str, default: str | None = None) -> None:
@@ -108,10 +126,21 @@ def add_show_argument(parser: argparse.ArgumentParser) -> None:
         metavar="SHOW",
         default=None,
         help=(
-            "What to print/write: stats, all, examples, list, html. "
+            "What to print: stats, all, examples. "
             "Can be combined. Examples accepts examples, examples:10, or "
             "examples:retained=20,pruned=20."
         ),
+    )
+
+
+def add_create_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--create",
+        nargs="+",
+        action="append",
+        metavar="ARTIFACT",
+        default=None,
+        help="Artifacts to create without printing them. Supported: list, decisions, html.",
     )
 
 
@@ -137,12 +166,20 @@ def analyze_command(
     wordfreq_min_zipf: float | None,
     wordfreq_top_pct: float | None,
     seed: int,
+    workers: int,
     show: list[str],
-    save: str | None,
+    create: list[str] | list[list[str]] | None,
     trust_remote_code: bool = False,
 ) -> None:
-    show, example_counts = normalize_show_args(show)
-    config = policy_config(
+    if workers < 1:
+        raise SystemExit("--workers must be at least 1")
+    raw_show = show
+    create = normalize_create_args(create)
+    show, example_counts = normalize_show_args(raw_show, default=[] if create else None)
+    derive_decisions = bool(raw_show) or should_create_decisions(create) or not create
+    if derive_decisions:
+        require_wordfreq_threshold(wordfreq_min_zipf, wordfreq_top_pct)
+    config = settings_config(
         keep_script,
         symbol_preset,
         dictionary,
@@ -150,46 +187,43 @@ def analyze_command(
         wordfreq_min_zipf,
         wordfreq_top_pct,
     )
-    tokenizer = load_tokenizer(model, trust_remote_code=trust_remote_code)
-    records = tokenizer_records(tokenizer)
-    result = run_token_pipeline(
-        model=model,
-        config=config,
-        records=records,
-        progress=True,
-    )
+    result = cached_create_only_pipeline(model, config) if create and not derive_decisions else None
+    if result is None:
+        tokenizer = load_tokenizer(model, trust_remote_code=trust_remote_code)
+        records = tokenizer_records(tokenizer)
+        result = run_token_pipeline(
+            model=model,
+            config=config,
+            records=records,
+            workers=workers,
+            derive_decisions=derive_decisions,
+            progress=True,
+        )
     print_cache_status(result.cache_dir, result.cache_reused)
     records = result.records
     scores = result.scores
-    report_show = [item for item in show if item != "html"]
-    visible_scores = filter_scores(scores, report_show or ["stats"])
-    if save:
-        save = resolve_save_dir(
-            "analyze",
-            save,
-            model=model,
+    decisions_dir = decision_artifact_dir(model=model, config=config, seed=seed)
+    if create:
+        write_create_artifacts(
+            create,
+            decisions_dir,
+            scores=scores,
+            cache_dir=result.cache_dir,
             config=config,
-            seed=seed,
+            html_dir=result.cache_dir,
+            wordfreq_min_zipf=wordfreq_min_zipf,
+            wordfreq_top_pct=wordfreq_top_pct,
         )
-        write_analyze_output(save, model=model, records=records, config=config, scores=scores, seed=seed)
-    if should_show_html(show):
-        html_path = write_wordfreq_html(result.cache_dir, config)
-        print(f"HTML: {html_path}")
-    if should_show_rows(report_show) or should_show_examples(report_show) or "stats" in set(report_show):
+    if show and (should_show_rows(show) or should_show_examples(show) or "stats" in set(show)):
         report = render_plain_text(
-            model, records, scores, seed, show=report_show, example_counts=example_counts, style="rich"
+            model, records, scores, seed, show=show, example_counts=example_counts, style="rich"
         )
         try:
             from rich.console import Console
 
             Console().print(report, soft_wrap=True)
         except ImportError:
-            print(render_plain_text(model, records, scores, seed, show=report_show, example_counts=example_counts))
-    if should_show_list(report_show):
-        jsonl = render_jsonl(visible_scores)
-        if jsonl:
-            print(jsonl)
-
+            print(render_plain_text(model, records, scores, seed, show=show, example_counts=example_counts))
 
 def prune_command(
     model: str,
@@ -200,13 +234,19 @@ def prune_command(
     languages: list[str],
     wordfreq_min_zipf: float | None,
     wordfreq_top_pct: float | None,
+    workers: int,
     show: list[str] | list[list[str]] | None = None,
+    create: list[str] | list[list[str]] | None = None,
     yes: bool = False,
     trust_remote_code: bool = False,
 ) -> None:
+    if workers < 1:
+        raise SystemExit("--workers must be at least 1")
     tokenizer = load_tokenizer(model, trust_remote_code=trust_remote_code)
     records = tokenizer_records(tokenizer)
     show, example_counts = normalize_show_args(show, default=["stats"])
+    create = normalize_create_args(create)
+    require_wordfreq_threshold(wordfreq_min_zipf, wordfreq_top_pct)
     model_config = load_model_config(model, trust_remote_code=trust_remote_code)
     architecture_report = inspect_model_architecture(model_config)
     try:
@@ -214,7 +254,7 @@ def prune_command(
     except PruneRefusal as exc:
         raise SystemExit(str(exc)) from exc
     checkpoint_vocab_size = model_vocabulary_size(architecture_report, len(records))
-    config = policy_config(
+    config = settings_config(
         keep_script,
         symbol_preset,
         dictionary,
@@ -227,11 +267,22 @@ def prune_command(
         model=model,
         config=config,
         records=records,
+        workers=workers,
         progress=True,
     )
     print_cache_status(result.cache_dir, result.cache_reused)
     scores = result.scores
     retained_ids = result.retained_ids
+    write_create_artifacts(
+        create,
+        save,
+        scores=scores,
+        cache_dir=result.cache_dir,
+        config=config,
+        html_dir=result.cache_dir,
+        wordfreq_min_zipf=wordfreq_min_zipf,
+        wordfreq_top_pct=wordfreq_top_pct,
+    )
 
     try:
         try:
@@ -329,8 +380,9 @@ def main(argv: list[str] | None = None) -> None:
             wordfreq_min_zipf=args.wordfreq_min_zipf,
             wordfreq_top_pct=args.wordfreq_top_pct,
             seed=args.seed,
+            workers=args.workers,
             show=args.show,
-            save=args.save,
+            create=args.create,
             trust_remote_code=args.trust_remote_code,
         )
     elif args.command == "prune":
@@ -343,7 +395,9 @@ def main(argv: list[str] | None = None) -> None:
             languages=args.languages,
             wordfreq_min_zipf=args.wordfreq_min_zipf,
             wordfreq_top_pct=args.wordfreq_top_pct,
+            workers=args.workers,
             show=args.show,
+            create=args.create,
             yes=args.yes,
             trust_remote_code=args.trust_remote_code,
         )
@@ -353,7 +407,7 @@ def app() -> None:
     main()
 
 
-def policy_config(
+def settings_config(
     keep_script: list[str],
     symbol_preset: list[str],
     dictionary: list[str],
@@ -374,39 +428,95 @@ def policy_config(
         raise SystemExit(str(exc)) from exc
 
 
-def write_analyze_output(
-    save: str,
-    *,
-    model: str,
-    records,
-    config: ScoreConfig,
-    scores,
-    seed: int,
-) -> dict[str, Path]:
+def require_wordfreq_threshold(wordfreq_min_zipf: float | None, wordfreq_top_pct: float | None) -> None:
+    if wordfreq_min_zipf is None and wordfreq_top_pct is None:
+        raise SystemExit(
+            "A word frequency threshold is required for thresholded decisions. "
+            "Use --wordfreq-min-zipf or --wordfreq-top-pct, or use only --create list."
+        )
+
+
+def cached_create_only_pipeline(model: str, config: ScoreConfig) -> PipelineResult | None:
+    cache_dir = token_cache_dir(model, config)
+    cached = load_cached_facts(cache_dir, list_settings(model, config))
+    if cached is None:
+        return None
+    token_facts, wordfreq_facts = cached
+    return PipelineResult(
+        model=model,
+        records=[],
+        scores=[],
+        retained_ids=[],
+        pruned_ids=[],
+        cache_dir=cache_dir,
+        cache_reused=True,
+        token_facts=token_facts,
+        wordfreq_facts=wordfreq_facts,
+        arrays=None,
+    )
+
+
+def write_token_decisions(save: str | Path, scores) -> Path:
     output_dir = Path(save)
     output_dir.mkdir(parents=True, exist_ok=True)
-    paths = {
-        "decisions": output_dir / "token_decisions.jsonl",
-        "summary": output_dir / "summary.md",
-        "policy": output_dir / "policy.json",
-    }
-    paths["decisions"].write_text(render_jsonl(scores) + ("\n" if scores else ""), encoding="utf-8")
-    paths["summary"].write_text(render_markdown(model, records, scores, seed, show=["all"]), encoding="utf-8")
-    paths["policy"].write_text(
-        json.dumps(
-            {
-                "model": model,
-                "policy": score_config_to_dict(config),
-                "counts": {"classified": len(scores)},
-            },
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
+    path = output_dir / "token_decisions.jsonl"
+    path.write_text(render_jsonl(scores) + ("\n" if scores else ""), encoding="utf-8")
+    return path
+
+
+def write_create_artifacts(
+    create: list[str],
+    decisions_dir: str | Path,
+    *,
+    scores,
+    cache_dir: Path,
+    config: ScoreConfig,
+    html_dir: str | Path,
+    wordfreq_min_zipf: float | None,
+    wordfreq_top_pct: float | None,
+) -> None:
+    if should_create_list(create):
+        print(f"List: {cache_dir}", file=sys.stderr)
+    if should_create_decisions(create):
+        decisions_path = write_token_decisions(decisions_dir, scores)
+        print(f"Decisions: {decisions_path}", file=sys.stderr)
+    if should_create_html(create):
+        html_path = write_wordfreq_html(
+            cache_dir,
+            config,
+            output_dir=html_dir,
+            wordfreq_min_zipf=wordfreq_min_zipf,
+            wordfreq_top_pct=wordfreq_top_pct,
         )
-        + "\n",
-        encoding="utf-8",
+        print(f"HTML: {html_path}")
+        url, pid = start_html_server(Path(html_dir))
+        print(f"Open: {url}")
+        print(f"Server PID: {pid}", file=sys.stderr)
+
+
+def start_html_server(directory: Path) -> tuple[str, int]:
+    port = free_local_port()
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "http.server",
+            str(port),
+            "--bind",
+            "127.0.0.1",
+        ],
+        cwd=directory,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
-    return paths
+    return f"http://127.0.0.1:{port}/wordfreq_viewer.html", int(process.pid)
+
+
+def free_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as handle:
+        handle.bind(("127.0.0.1", 0))
+        return int(handle.getsockname()[1])
 
 
 def score_config_to_dict(config: ScoreConfig) -> dict:
@@ -434,13 +544,22 @@ def resolve_save_dir(
     seed: int | None = None,
 ) -> str:
     if save != DEFAULT_SAVE:
-        return save
+        path = Path(save)
+        return str(path if path.is_absolute() else PROJECT_ROOT / path)
 
-    parts = [compact_policy_slug(model, config, include_threshold=(command != "list"))]
+    parts = [compact_settings_slug(model, config, include_threshold=(command != "list"))]
     if seed is not None:
         parts.append(f"seed-{seed}")
     name = "__".join(part for part in parts if part)
-    return str(Path("tokenpruner_artifacts") / command / name)
+    root = PRUNED_MODELS_DIR if command == "prune" else LISTS_DIR / command
+    return str(root / name)
+
+
+def decision_artifact_dir(*, model: str, config: ScoreConfig, seed: int | None = None) -> str:
+    parts = [compact_settings_slug(model, config, include_threshold=True)]
+    if seed is not None:
+        parts.append(f"seed-{seed}")
+    return str(DECISIONS_DIR / "__".join(parts))
 
 
 def format_gb(byte_count: int) -> str:
@@ -466,7 +585,7 @@ def print_pruning_preview(
 
 def print_cache_status(cache_dir: Path, reused: bool) -> None:
     status = "reused" if reused else "created"
-    print(f"Token facts cache {status}: {cache_dir}", file=sys.stderr)
+    print(f"List {status}: {cache_dir}", file=sys.stderr)
 
 
 def confirm_pruning() -> bool:
@@ -541,19 +660,13 @@ def print_prune_decisions(
                     example_counts=example_counts,
                 )
             )
-    if should_show_list(show):
-        visible_scores = filter_scores(scores, show)
-        jsonl = render_jsonl(visible_scores)
-        if jsonl:
-            print(jsonl)
-
 
 def normalize_show_args(
     show: list[str] | list[list[str]] | None,
     default: list[str] | None = None,
 ) -> tuple[list[str], ExampleCounts]:
     if not show:
-        return list(default or ["all"]), ExampleCounts()
+        return list(default) if default is not None else ["all"], ExampleCounts()
     flattened: list[str] = []
     for item in show:
         if isinstance(item, list):
@@ -568,14 +681,42 @@ def normalize_show_args(
             example_counts = parse_examples_spec(item)
         else:
             normalized.append(item)
-    valid = {"all", "examples", "stats", "list", "html"}
+    valid = {"all", "examples", "stats"}
     unknown = [item for item in normalized if item not in valid]
     if unknown:
         raise SystemExit(f"Unsupported --show value(s): {', '.join(unknown)}")
     ordered = [
-        item for item in ["stats", "all", "examples", "list", "html"] if item in normalized
+        item for item in ["stats", "all", "examples"] if item in normalized
     ]
     return ordered or ["all"], example_counts
+
+
+def normalize_create_args(create: list[str] | list[list[str]] | None) -> list[str]:
+    if not create:
+        return []
+    flattened: list[str] = []
+    for item in create:
+        if isinstance(item, list):
+            flattened.extend(item)
+        else:
+            flattened.append(item)
+    valid = {"list", "decisions", "html"}
+    unknown = [item for item in flattened if item not in valid]
+    if unknown:
+        raise SystemExit(f"Unsupported --create value(s): {', '.join(unknown)}")
+    return [item for item in ["list", "decisions", "html"] if item in flattened]
+
+
+def should_create_list(create: list[str]) -> bool:
+    return "list" in create
+
+
+def should_create_decisions(create: list[str]) -> bool:
+    return "decisions" in create
+
+
+def should_create_html(create: list[str]) -> bool:
+    return "html" in create
 
 
 def parse_examples_spec(value: str) -> ExampleCounts:

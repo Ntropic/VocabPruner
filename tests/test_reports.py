@@ -68,7 +68,6 @@ def test_filter_and_stats_are_binary():
     ]
 
     assert [score.token.token_id for score in filter_scores(scores, ["all"])] == [1, 2, 3, 4]
-    assert [score.token.token_id for score in filter_scores(scores, ["list"])] == [1, 2, 3, 4]
     assert filter_scores(scores, ["stats"]) == []
     assert score_stats(scores) == {"retained": 1, "pruned": 3}
 

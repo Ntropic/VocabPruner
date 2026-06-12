@@ -7,7 +7,7 @@ from typing import Literal
 from tokenpruner.models import TokenScore
 from tokenpruner.vocab import TokenRecord, vocabulary_stats
 
-ShowOption = Literal["all", "examples", "stats", "list"]
+ShowOption = Literal["all", "examples", "stats"]
 ShowOptions = ShowOption | list[ShowOption] | tuple[ShowOption, ...] | set[ShowOption]
 
 
@@ -106,17 +106,13 @@ def render_plain_text(
 
 def filter_scores(scores: list[TokenScore], show: ShowOptions) -> list[TokenScore]:
     options = normalize_show_options(show)
-    if "all" in options or "list" in options:
+    if "all" in options:
         return list(scores)
     return []
 
 
 def should_show_rows(show: ShowOptions) -> bool:
     return "all" in normalize_show_options(show)
-
-
-def should_show_list(show: ShowOptions) -> bool:
-    return "list" in normalize_show_options(show)
 
 
 def should_show_examples(show: ShowOptions) -> bool:
@@ -127,7 +123,7 @@ def normalize_show_options(show: ShowOptions) -> set[ShowOption]:
     if isinstance(show, str):
         return {show}
     options = {option for option in show}
-    unknown = options - {"all", "examples", "stats", "list"}
+    unknown = options - {"all", "examples", "stats"}
     if unknown:
         raise ValueError(f"Unsupported show options: {', '.join(sorted(unknown))}")
     return options
@@ -216,5 +212,5 @@ def _rich_escape(value: str) -> str:
 def _show_label(show: ShowOptions) -> str:
     options = normalize_show_options(show)
     return " ".join(
-        option for option in ["stats", "all", "examples", "list"] if option in options
+        option for option in ["stats", "all", "examples"] if option in options
     )
