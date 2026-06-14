@@ -51,7 +51,7 @@ def test_local_model_path_is_complete_without_marker(tmp_path):
     assert status.snapshot_path == local_model
 
 
-def test_existing_analysis_snapshot_without_marker_is_detected_from_disk(tmp_path, monkeypatch):
+def test_existing_analysis_snapshot_without_marker_is_unknown(tmp_path, monkeypatch):
     monkeypatch.setattr(hf_cache, "HF_MODELS_DIR", tmp_path / "hf_models")
     snapshot = tmp_path / "hf_models" / "models--org--model" / "snapshots" / "abc123"
     snapshot.mkdir(parents=True)
@@ -60,11 +60,11 @@ def test_existing_analysis_snapshot_without_marker_is_detected_from_disk(tmp_pat
     status = hf_cache.cached_checkpoint_status("org/model")
 
     assert status.complete is False
-    assert status.kind == "analysis"
-    assert status.snapshot_path == snapshot
+    assert status.kind == "unknown"
+    assert status.snapshot_path is None
 
 
-def test_existing_checkpoint_snapshot_without_marker_is_detected_from_disk(tmp_path, monkeypatch):
+def test_existing_checkpoint_snapshot_without_marker_is_unknown(tmp_path, monkeypatch):
     monkeypatch.setattr(hf_cache, "HF_MODELS_DIR", tmp_path / "hf_models")
     snapshot = tmp_path / "hf_models" / "models--org--model" / "snapshots" / "abc123"
     snapshot.mkdir(parents=True)
@@ -72,9 +72,9 @@ def test_existing_checkpoint_snapshot_without_marker_is_detected_from_disk(tmp_p
 
     status = hf_cache.cached_checkpoint_status("org/model")
 
-    assert status.complete is True
-    assert status.kind == "checkpoint"
-    assert status.snapshot_path == snapshot
+    assert status.complete is False
+    assert status.kind == "unknown"
+    assert status.snapshot_path is None
 
 
 def test_checkpoint_resolution_reuses_complete_marker_without_network(tmp_path, monkeypatch):

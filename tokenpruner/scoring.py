@@ -50,6 +50,35 @@ class ScoreConfig:
         )
 
 
+def settings_config(
+    keep_script: list[str],
+    symbol_preset: list[str],
+    dictionary: list[str],
+    languages: list[str],
+    wordfreq_min_zipf: float | None,
+    wordfreq_top_pct: float | None,
+) -> ScoreConfig:
+    try:
+        return ScoreConfig.from_cli(
+            keep_scripts=keep_script,
+            symbol_presets=symbol_preset,
+            languages=languages,
+            wordfreq_min_zipf=wordfreq_min_zipf,
+            wordfreq_top_pct=wordfreq_top_pct,
+            dictionaries=dictionary,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def require_wordfreq_threshold(wordfreq_min_zipf: float | None, wordfreq_top_pct: float | None) -> None:
+    if wordfreq_min_zipf is None and wordfreq_top_pct is None:
+        raise SystemExit(
+            "A word frequency threshold is required for thresholded decisions. "
+            "Use --wordfreq-min-zipf or --wordfreq-top-pct, or use only --create list."
+        )
+
+
 def score_token(record: TokenRecord, config: ScoreConfig, dictionaries: dict[str, set[str]] | None = None) -> TokenScore:
     text = record.decoded_text or record.raw_token
     profile = script_profile(text)

@@ -4,11 +4,34 @@ TokenPruner analyzes tokenizer vocabularies and decides which tokens to keep for
 target workload. It combines character scripts, symbol presets, dictionaries, and
 `wordfreq` language evidence with a deterministic accept/prune decision tree.
 
+## Install
+
+```bash
+conda activate tokenizer
+pip install -e .
+```
+
+Shell completion:
+
+```bash
+eval "$(register-python-argcomplete tokenpruner)"
+```
+
+Hugging Face token:
+
+```bash
+echo 'export HF_TOKEN=<your_token>' >> ~/.bashrc
+source ~/.bashrc
+```
+
+Create token: https://huggingface.co/settings/tokens/new
+
 ## Commands
 
 - `inspect`: load a tokenizer/model config and report vocabulary metadata.
 - `analyze`: classify vocabularies through the shared cache, print diagnostics, and create generated artifacts.
 - `prune`: prune a supported model with compact text-token IDs; safetensors checkpoints are rewritten shard-by-shard without loading the full model.
+- `benchmark`: compare a pruned model against its original model with token-count, optional quality, and optional speed checks.
 
 ## Parameters
 
@@ -28,25 +51,6 @@ target workload. It combines character scripts, symbol presets, dictionaries, an
 - `--trust-remote-code`: trust custom code from Hugging Face model repositories.
 - `--yes`: skip prune confirmation prompts.
 
-`--create list` creates or reuses the threshold-independent token fact list.
-It does not write thresholded decisions and does not require a frequency
-threshold. Existing lists are reused when the stored schema and non-threshold
-settings match. `--create decisions` writes `token_decisions.jsonl`
-for the current threshold settings under `decisions/` and requires a threshold.
-`--create html` writes `wordfreq_viewer.html` into the matching list directory
-and imports the existing `settings.json` and `wordfreq_facts.json` from there.
-It also starts a local HTTP server and prints the URL to open, because browsers
-usually block imported local JSON from `file://`. The viewer shows per-language
-row counts, unique terms, inferred wordfreq dictionary size, and hover details
-with a plot marker. Generated lists are written directly under `lists/`.
-Default `prune` outputs are written under `pruned_models/`, or can be named
-with `--save`.
-
-Downloaded Hugging Face model/config/tokenizer files are cached inside the repo
-under `hf_models/`. TokenPruner writes a small local marker there to distinguish
-analysis-only tokenizer/config downloads from checkpoint downloads, so cache
-completeness can be checked from disk.
-Relative output paths are resolved from the TokenPruner project directory.
 
 ## Example Results
 

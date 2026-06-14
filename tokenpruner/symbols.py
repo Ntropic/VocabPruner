@@ -57,6 +57,10 @@ def char_matches_symbol_preset(char: str, presets: set[str]) -> bool:
     return False
 
 
+def compact_symbol_values(values: set[str]) -> list[str]:
+    return ["all"] if set(values) == set(symbol_presets()) else sorted(values)
+
+
 @lru_cache(maxsize=1)
 def symbol_presets() -> dict[str, set[str]]:
     loaded = {name: _load_symbol_preset(filename)[0] for name, filename in SYMBOL_PRESET_FILES.items()}

@@ -5,6 +5,7 @@ import pytest
 
 import tokenpruner.cli as cli
 import tokenpruner.pipeline as pipeline
+import tokenpruner.pruning as pruning
 
 
 @pytest.fixture(autouse=True)
@@ -12,12 +13,11 @@ def allow_pruning_runtime(monkeypatch, tmp_path):
     lists_dir = tmp_path / "lists"
     decisions_dir = tmp_path / "decisions"
     pruned_models_dir = tmp_path / "pruned_models"
-    monkeypatch.setattr(cli, "LISTS_DIR", lists_dir)
-    monkeypatch.setattr(cli, "DECISIONS_DIR", decisions_dir)
-    monkeypatch.setattr(cli, "PRUNED_MODELS_DIR", pruned_models_dir)
     monkeypatch.setattr(pipeline, "LISTS_DIR", lists_dir)
-    monkeypatch.setattr(cli, "missing_pruning_packages", lambda report: ())
-    monkeypatch.setattr(cli, "validate_pruning_runtime", lambda report: None)
+    monkeypatch.setattr(pipeline, "DECISIONS_DIR", decisions_dir)
+    monkeypatch.setattr(pipeline, "PRUNED_MODELS_DIR", pruned_models_dir)
+    monkeypatch.setattr(pruning, "missing_pruning_packages", lambda report: ())
+    monkeypatch.setattr(pruning, "validate_pruning_runtime", lambda report: None)
     monkeypatch.setattr(cli, "prune_safetensors_checkpoint", lambda **kwargs: None)
     monkeypatch.setattr(
         cli,
@@ -178,12 +178,12 @@ def test_analyze_create_list_creates_cache_without_decisions(monkeypatch, capsys
     assert "TokenPruner Sample Report" not in captured.out
     assert '"token"' not in captured.out
     assert "List:" in captured.err
-    list_dirs = [path for path in cli.LISTS_DIR.iterdir() if path.is_dir()]
+    list_dirs = [path for path in pipeline.LISTS_DIR.iterdir() if path.is_dir()]
     assert len(list_dirs) == 1
     assert (list_dirs[0] / "settings.json").is_file()
     assert (list_dirs[0] / "token_facts.json").is_file()
     assert (list_dirs[0] / "wordfreq_facts.json").is_file()
-    assert not list(cli.DECISIONS_DIR.rglob("token_decisions.jsonl"))
+    assert not list(pipeline.DECISIONS_DIR.rglob("token_decisions.jsonl"))
 
 
 def test_analyze_create_list_reuses_existing_cache_without_threshold_decisions(monkeypatch, capsys, tmp_path):
@@ -204,7 +204,7 @@ def test_analyze_create_list_reuses_existing_cache_without_threshold_decisions(m
     assert "List reused" in second.err
     assert "Retained:" not in first.out
     assert "Retained:" not in second.out
-    assert not list(cli.DECISIONS_DIR.rglob("token_decisions.jsonl"))
+    assert not list(pipeline.DECISIONS_DIR.rglob("token_decisions.jsonl"))
 
 
 def test_analyze_create_html_reuses_cache_without_loading_tokenizer(monkeypatch, capsys, tmp_path):
@@ -248,7 +248,7 @@ def test_analyze_create_decisions_writes_jsonl_without_printing_it(monkeypatch, 
     assert "TokenPruner Sample Report" in captured.out
     assert '"token"' not in captured.out
     assert "Decisions:" in captured.err
-    saved_decisions = list(cli.DECISIONS_DIR.rglob("token_decisions.jsonl"))
+    saved_decisions = list(pipeline.DECISIONS_DIR.rglob("token_decisions.jsonl"))
     assert saved_decisions
     assert len(saved_decisions[0].read_text(encoding="utf-8").strip().splitlines()) == 6
 
@@ -373,7 +373,7 @@ def test_analyze_create_decisions_uses_generated_settings_path(monkeypatch, caps
 
     captured = capsys.readouterr()
     expected = (
-        cli.DECISIONS_DIR
+        pipeline.DECISIONS_DIR
         / "tiny__scripts-common-inherited-latin__symbols-ascii-punctuation-coding__langs-en__zipf-4__seed-1"
         / "token_decisions.jsonl"
     )
@@ -416,7 +416,7 @@ def test_analyze_create_html_writes_viewer_assets(monkeypatch, capsys, tmp_path)
     assert "Open: http://127.0.0.1:8765/wordfreq_viewer.html" in captured.out
     assert "Server PID: 12345" in captured.err
     assert "TokenPruner Sample Report" not in captured.out
-    html_paths = list(cli.LISTS_DIR.rglob("wordfreq_viewer.html"))
+    html_paths = list(pipeline.LISTS_DIR.rglob("wordfreq_viewer.html"))
     assert html_paths
     list_dir = html_paths[0].parent
     assert (list_dir / "settings.json").is_file()
@@ -457,7 +457,7 @@ def test_analyze_threshold_change_reuses_same_cache(monkeypatch, capsys, tmp_pat
 
     assert "List created" in first.err
     assert "List reused" in second.err
-    list_dirs = [path for path in cli.LISTS_DIR.iterdir() if path.is_dir()]
+    list_dirs = [path for path in pipeline.LISTS_DIR.iterdir() if path.is_dir()]
     assert len(list_dirs) == 1
     assert "zipf-8" not in list_dirs[0].name
     assert "zipf-3" not in list_dirs[0].name
@@ -470,8 +470,8 @@ def test_analyze_without_save_writes_cache_only(monkeypatch, capsys, tmp_path):
     cli.main(["analyze", "--model", "tiny", "--wordfreq-min-zipf", "4", "--show", "stats"])
 
     capsys.readouterr()
-    assert cli.LISTS_DIR.exists()
-    assert any((path / "settings.json").is_file() for path in cli.LISTS_DIR.iterdir() if path.is_dir())
+    assert pipeline.LISTS_DIR.exists()
+    assert any((path / "settings.json").is_file() for path in pipeline.LISTS_DIR.iterdir() if path.is_dir())
     assert not list(tmp_path.rglob("retained_token_ids.txt"))
     assert not list(tmp_path.rglob("pruned_token_ids.txt"))
 
@@ -484,7 +484,7 @@ def test_create_list_uses_default_cache_path(monkeypatch, capsys, tmp_path):
 
     captured = capsys.readouterr()
     expected = (
-        cli.LISTS_DIR
+        pipeline.LISTS_DIR
         / "tiny-model__scripts-common-inherited-latin__symbols-ascii-punctuation-coding__langs-en"
     )
     assert '"token"' not in captured.out
@@ -492,7 +492,7 @@ def test_create_list_uses_default_cache_path(monkeypatch, capsys, tmp_path):
     assert (expected / "settings.json").exists()
     assert (expected / "token_facts.json").exists()
     assert (expected / "wordfreq_facts.json").exists()
-    assert not list(cli.DECISIONS_DIR.rglob("token_decisions.jsonl"))
+    assert not list(pipeline.DECISIONS_DIR.rglob("token_decisions.jsonl"))
 
 
 def test_prune_refuses_separate_smaller_vocabulary_before_loading_weights(monkeypatch, tmp_path):
@@ -583,7 +583,7 @@ def test_prune_without_save_path_uses_default_artifact_path(monkeypatch, capsys,
 
     output = capsys.readouterr().out
     expected = (
-        cli.PRUNED_MODELS_DIR
+        pipeline.PRUNED_MODELS_DIR
         /  "tiny-model__scripts-common-inherited-latin__symbols-ascii-punctuation-coding__langs-en__zipf-4"
     )
     assert f"Save: {expected}" in output
@@ -748,45 +748,45 @@ def test_confirm_pruning_accepts_only_explicit_yes(monkeypatch):
 def test_ensure_pruning_runtime_offers_and_installs_missing_packages(monkeypatch, capsys):
     calls = []
     checks = iter([("torch", "nvidia-modelopt"), ()])
-    monkeypatch.setattr(cli, "missing_pruning_packages", lambda report: next(checks))
-    monkeypatch.setattr(cli, "validate_pruning_runtime", lambda report: None)
+    monkeypatch.setattr(pruning, "missing_pruning_packages", lambda report: next(checks))
+    monkeypatch.setattr(pruning, "validate_pruning_runtime", lambda report: None)
     monkeypatch.setattr("builtins.input", lambda prompt: "y")
-    monkeypatch.setattr(cli.subprocess, "run", lambda command, check: calls.append((command, check)))
+    monkeypatch.setattr(pruning.subprocess, "run", lambda command, check: calls.append((command, check)))
 
-    cli.ensure_pruning_runtime(object())
+    pruning.ensure_pruning_runtime(object())
 
     output = capsys.readouterr().out
     assert "Missing packages" in output
     assert "python" in output.lower()
-    assert calls == [([cli.sys.executable, "-m", "pip", "install", "torch", "nvidia-modelopt"], True)]
+    assert calls == [([pruning.sys.executable, "-m", "pip", "install", "torch", "nvidia-modelopt"], True)]
 
 
 def test_ensure_pruning_runtime_decline_does_not_install(monkeypatch):
-    monkeypatch.setattr(cli, "missing_pruning_packages", lambda report: ("torch",))
+    monkeypatch.setattr(pruning, "missing_pruning_packages", lambda report: ("torch",))
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
     monkeypatch.setattr(
-        cli.subprocess,
+        pruning.subprocess,
         "run",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("pip should not run")),
     )
 
     with pytest.raises(SystemExit, match="were not installed"):
-        cli.ensure_pruning_runtime(object())
+        pruning.ensure_pruning_runtime(object())
 
 
 def test_ensure_pruning_runtime_yes_skips_install_prompt(monkeypatch):
     calls = []
-    monkeypatch.setattr(cli, "missing_pruning_packages", lambda report: ("compressed-tensors",))
-    monkeypatch.setattr(cli, "validate_pruning_runtime", lambda report: None)
+    monkeypatch.setattr(pruning, "missing_pruning_packages", lambda report: ("compressed-tensors",))
+    monkeypatch.setattr(pruning, "validate_pruning_runtime", lambda report: None)
     monkeypatch.setattr(
         "builtins.input",
         lambda prompt: (_ for _ in ()).throw(AssertionError("input should not run")),
     )
-    monkeypatch.setattr(cli.subprocess, "run", lambda command, check: calls.append(command))
+    monkeypatch.setattr(pruning.subprocess, "run", lambda command, check: calls.append(command))
 
-    cli.ensure_pruning_runtime(object(), assume_yes=True)
+    pruning.ensure_pruning_runtime(object(), assume_yes=True)
 
-    assert calls == [[cli.sys.executable, "-m", "pip", "install", "compressed-tensors"]]
+    assert calls == [[pruning.sys.executable, "-m", "pip", "install", "compressed-tensors"]]
 
 
 def test_analyze_rejects_output_argument(monkeypatch):

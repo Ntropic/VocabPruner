@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,7 +14,8 @@ import numpy as np
 
 from tokenpruner.dictionaries import dictionary_matches, load_dictionaries
 from tokenpruner.models import DictionaryMatch, ScriptProfile, TokenRecord, TokenScore, WordfreqMatch
-from tokenpruner.paths import LISTS_DIR
+from tokenpruner.paths import DECISIONS_DIR, LISTS_DIR, PROJECT_ROOT, PRUNED_MODELS_DIR
+from tokenpruner.reports import render_jsonl
 from tokenpruner.scoring import (
     ScoreConfig,
     character_gate,
@@ -23,7 +26,7 @@ from tokenpruner.scoring import (
     token_segments,
 )
 from tokenpruner.scripts import script_profile
-from tokenpruner.symbols import matching_symbol_presets, symbol_presets
+from tokenpruner.symbols import compact_symbol_values, matching_symbol_presets
 from tokenpruner.wordfreq_support import wordfreq_diagnostics
 
 CACHE_SCHEMA_VERSION = 1
@@ -79,6 +82,75 @@ def write_wordfreq_html(
         encoding="utf-8",
     )
     return html_path
+
+
+def write_token_decisions(save: str | Path, scores) -> Path:
+    output_dir = Path(save)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "token_decisions.jsonl"
+    path.write_text(render_jsonl(scores) + ("\n" if scores else ""), encoding="utf-8")
+    return path
+
+
+def write_create_artifacts(
+    create: list[str],
+    output_dir: str | Path,
+    *,
+    config: ScoreConfig,
+    scores=None,
+    cache_dir: Path | None = None,
+    html_dir: str | Path | None = None,
+    wordfreq_min_zipf: float | None = None,
+    wordfreq_top_pct: float | None = None,
+    html_launcher: Callable[[Path], tuple[str, int]] | None = None,
+) -> Path:
+    resolved_output_dir = Path(output_dir)
+    if not create:
+        return resolved_output_dir
+    if cache_dir is None:
+        raise ValueError("cache_dir is required when creating artifacts")
+    html_output_dir = Path(html_dir) if html_dir is not None else resolved_output_dir
+    if "list" in create:
+        print(f"List: {cache_dir}", file=sys.stderr)
+    if "decisions" in create:
+        decisions_path = write_token_decisions(resolved_output_dir, scores or [])
+        print(f"Decisions: {decisions_path}", file=sys.stderr)
+    if "html" in create:
+        html_path = write_wordfreq_html(
+            cache_dir,
+            config,
+            output_dir=html_output_dir,
+            wordfreq_min_zipf=wordfreq_min_zipf,
+            wordfreq_top_pct=wordfreq_top_pct,
+        )
+        print(f"HTML: {html_path}")
+        if html_launcher is not None:
+            url, pid = html_launcher(html_output_dir)
+            print(f"Open: {url}")
+            print(f"Server PID: {pid}", file=sys.stderr)
+    return resolved_output_dir
+
+
+def resolve_artifact_dir(
+    output_dir: str | Path | None,
+    *,
+    command: str,
+    model: str,
+    config: ScoreConfig,
+    seed: int | None = None,
+) -> Path:
+    if output_dir is not None:
+        path = Path(output_dir)
+        return path if path.is_absolute() else PROJECT_ROOT / path
+    if command == "prune":
+        parts = [compact_settings_slug(model, config, include_threshold=True)]
+        if seed is not None:
+            parts.append(f"seed-{seed}")
+        return PRUNED_MODELS_DIR / "__".join(part for part in parts if part)
+    parts = [compact_settings_slug(model, config, include_threshold=True)]
+    if seed is not None:
+        parts.append(f"seed-{seed}")
+    return DECISIONS_DIR / "__".join(part for part in parts if part)
 
 
 def _viewer_relative_path(source_dir: Path, target: Path) -> str:
@@ -424,6 +496,26 @@ def run_token_pipeline(
         token_facts=token_facts,
         wordfreq_facts=wordfreq_facts,
         arrays=arrays,
+    )
+
+
+def cached_create_only_pipeline(model: str, config: ScoreConfig) -> PipelineResult | None:
+    cache_dir = token_cache_dir(model, config)
+    cached = load_cached_facts(cache_dir, list_settings(model, config))
+    if cached is None:
+        return None
+    token_facts, wordfreq_facts = cached
+    return PipelineResult(
+        model=model,
+        records=[],
+        scores=[],
+        retained_ids=[],
+        pruned_ids=[],
+        cache_dir=cache_dir,
+        cache_reused=True,
+        token_facts=token_facts,
+        wordfreq_facts=wordfreq_facts,
+        arrays=None,
     )
 
 
@@ -801,10 +893,6 @@ def _diagnostic_passes_threshold(item: dict[str, Any], config: ScoreConfig) -> b
         rank_percent = item["rank_percent"]
         return rank_percent is not None and rank_percent <= config.wordfreq_top_pct
     return item["zipf"] >= config.wordfreq_min_zipf
-
-
-def compact_symbol_values(values: set[str]) -> list[str]:
-    return ["all"] if set(values) == set(symbol_presets()) else sorted(values)
 
 
 def symbol_slug(values: set[str]) -> str:

@@ -8,11 +8,11 @@ from tokenpruner.pruning import (
     model_vocabulary_size,
     prune_safetensors_checkpoint,
     remap_model_config,
-    rewrite_tokenizer_json,
     slice_model_vocab,
     validate_pruning_architecture,
     validate_pruning_runtime,
 )
+from tokenpruner.vocab import VocabRewriteError, rewrite_tokenizer_json
 
 
 def test_validate_pruning_allows_shared_mtp_and_encoders():
@@ -104,7 +104,7 @@ def test_rewrite_tokenizer_json_refuses_unknown_vocab_shape(tmp_path):
     tokenizer_json = tmp_path / "tokenizer.json"
     tokenizer_json.write_text(json.dumps({"model": {"type": "Mystery"}}), encoding="utf-8")
 
-    with pytest.raises(PruneRefusal, match="model.vocab"):
+    with pytest.raises(VocabRewriteError, match="model.vocab"):
         rewrite_tokenizer_json(tokenizer_json, {0: 0})
 
 
@@ -297,7 +297,7 @@ def test_prune_safetensors_checkpoint_streams_only_vocab_tensors(monkeypatch, tm
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr("tokenpruner.pruning.validate_saved_tokenizer", lambda *args, **kwargs: None)
+    monkeypatch.setattr("tokenpruner.vocab.validate_saved_tokenizer", lambda *args, **kwargs: None)
 
     result = prune_safetensors_checkpoint(
         model_source=str(source),

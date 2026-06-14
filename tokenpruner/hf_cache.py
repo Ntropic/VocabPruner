@@ -120,9 +120,6 @@ def cached_checkpoint_status(model: str) -> CachedCheckpointStatus:
     marker_path = download_marker_path(model)
     marker = read_download_marker(model)
     if marker is None:
-        inferred = infer_cached_checkpoint_status(model, marker_path)
-        if inferred is not None:
-            return inferred
         return CachedCheckpointStatus(
             complete=False,
             kind="unknown",
@@ -137,86 +134,3 @@ def cached_checkpoint_status(model: str) -> CachedCheckpointStatus:
         marker_path=marker_path,
         snapshot_path=snapshot_path,
     )
-
-
-def infer_cached_checkpoint_status(
-    model: str,
-    marker_path: Path | None = None,
-) -> CachedCheckpointStatus | None:
-    cache_dir = repo_cache_dir(model)
-    if cache_dir is None:
-        return None
-    marker_path = marker_path or cache_dir / HF_DOWNLOAD_MARKER
-    snapshots_dir = cache_dir / "snapshots"
-    if not snapshots_dir.is_dir():
-        return None
-    analysis_snapshot: Path | None = None
-    partial_checkpoint: Path | None = None
-    for snapshot in sorted(
-        (path for path in snapshots_dir.iterdir() if path.is_dir()),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    ):
-        if snapshot_has_complete_safetensors(snapshot):
-            return CachedCheckpointStatus(
-                complete=True,
-                kind="checkpoint",
-                marker_path=marker_path,
-                snapshot_path=snapshot,
-            )
-        if snapshot_has_checkpoint_reference(snapshot):
-            partial_checkpoint = partial_checkpoint or snapshot
-        elif snapshot_has_analysis_files(snapshot):
-            analysis_snapshot = analysis_snapshot or snapshot
-    if partial_checkpoint is not None:
-        return CachedCheckpointStatus(
-            complete=False,
-            kind="partial-checkpoint",
-            marker_path=marker_path,
-            snapshot_path=partial_checkpoint,
-        )
-    if analysis_snapshot is not None:
-        return CachedCheckpointStatus(
-            complete=False,
-            kind="analysis",
-            marker_path=marker_path,
-            snapshot_path=analysis_snapshot,
-        )
-    return None
-
-
-def snapshot_has_complete_safetensors(snapshot: Path) -> bool:
-    index_path = snapshot / "model.safetensors.index.json"
-    if index_path.is_file():
-        try:
-            index = json.loads(index_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return False
-        weight_map = index.get("weight_map")
-        if not isinstance(weight_map, dict) or not weight_map:
-            return False
-        filenames = {str(filename) for filename in weight_map.values()}
-        return all(
-            (snapshot / filename).is_file() and (snapshot / filename).stat().st_size > 0
-            for filename in filenames
-        )
-    safetensors = list(snapshot.glob("*.safetensors"))
-    return bool(safetensors) and all(path.stat().st_size > 0 for path in safetensors)
-
-
-def snapshot_has_checkpoint_reference(snapshot: Path) -> bool:
-    return (snapshot / "model.safetensors.index.json").is_file() or any(snapshot.glob("*.safetensors"))
-
-
-def snapshot_has_analysis_files(snapshot: Path) -> bool:
-    names = {
-        "added_tokens.json",
-        "config.json",
-        "merges.txt",
-        "special_tokens_map.json",
-        "tokenizer.json",
-        "tokenizer.model",
-        "tokenizer_config.json",
-        "vocab.json",
-    }
-    return any((snapshot / name).is_file() for name in names)

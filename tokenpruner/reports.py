@@ -23,47 +23,8 @@ def render_jsonl(scores: list[TokenScore]) -> str:
     return "\n".join(json.dumps(score.to_dict(), ensure_ascii=False) for score in scores)
 
 
-def render_markdown(
-    model: str,
-    records: list[TokenRecord],
-    scores: list[TokenScore],
-    seed: int,
-    show: ShowOptions = ("all",),
-) -> str:
-    stats = vocabulary_stats(records)
-    visible_scores = filter_scores(scores, show)
-    retained = sorted(
-        [score for score in visible_scores if score.status in {"protected", "retain_candidate"}],
-        key=lambda score: score.token.token_id,
-    )[:25]
-    non_retained = sorted(
-        [score for score in visible_scores if score.status == "non_retain_candidate"],
-        key=lambda score: score.token.token_id,
-    )[:25]
-    stats_counts = score_stats(scores)
-
-    parts = [
-        "# TokenPruner Sample Report",
-        "",
-        f"- Model/tokenizer: `{model}`",
-        f"- Vocabulary size: {stats['vocab_size']}",
-        f"- Special tokens: {stats['special_tokens']}",
-        f"- Byte fallback tokens: {stats['byte_fallback_tokens']}",
-        f"- Classified tokens: {len(scores)}",
-        f"- Displayed tokens: {len(visible_scores)}",
-        f"- Show mode: {_show_label(show)}",
-        f"- Random seed: {seed}",
-        f"- Retained: {stats_counts['retained']}",
-        f"- Pruned: {stats_counts['pruned']}",
-        "",
-        "## Retained Decisions",
-        _table(retained),
-        "",
-        "## Pruned Decisions",
-        _table(non_retained),
-        "",
-    ]
-    return "\n".join(parts)
+def format_gb(byte_count: int) -> str:
+    return f"{byte_count / (1024 ** 3):.3f}"
 
 
 def render_plain_text(
@@ -156,27 +117,6 @@ def _seeded_examples(scores: list[TokenScore], count: int, seed: int, bucket: st
     return selected[:count]
 
 
-def _table(scores: list[TokenScore]) -> str:
-    if not scores:
-        return "_No samples._"
-    rows = [
-        "| id | raw | decoded | status | top explanation |",
-        "| ---: | --- | --- | --- | --- |",
-    ]
-    for score in scores:
-        explanation = score.explanations[0] if score.explanations else ""
-        rows.append(
-            "| {id} | `{raw}` | `{decoded}` | {status} | {explanation} |".format(
-                id=score.token.token_id,
-                raw=_escape(score.token.raw_token),
-                decoded=_escape(score.token.decoded_text),
-                status=score.status,
-                explanation=_escape(explanation),
-            )
-        )
-    return "\n".join(rows)
-
-
 def _plain_rows(scores: list[TokenScore], style: Literal["plain", "rich"] = "plain") -> str:
     if not scores:
         return "  No samples."
@@ -199,10 +139,6 @@ def _plain_rows(scores: list[TokenScore], style: Literal["plain", "rich"] = "pla
         for explanation in score.explanations[:3]:
             lines.append(f"      - {explanation}")
     return "\n".join(lines)
-
-
-def _escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("`", "\\`").replace("|", "\\|").replace("\n", "\\n")
 
 
 def _rich_escape(value: str) -> str:
