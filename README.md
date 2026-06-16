@@ -32,6 +32,9 @@ Create token: https://huggingface.co/settings/tokens/new
 - `analyze`: classify vocabularies through the shared cache, print diagnostics, and create generated artifacts.
 - `prune`: prune a supported model with compact text-token IDs; safetensors checkpoints are rewritten shard-by-shard without loading the full model.
 - `benchmark`: compare a pruned model against its original model with token-count, optional quality, and optional speed checks.
+- `benchmark` examples:
+  - `tokenpruner benchmark --model pruned_models/MODEL --datasets wikitext alpaca`
+  - `tokenpruner benchmark --before-model orig --after-model pruned --quality --speed`
 
 ## Parameters
 

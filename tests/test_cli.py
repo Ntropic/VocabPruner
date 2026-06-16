@@ -70,6 +70,15 @@ def test_inspect_reports_model_architecture(monkeypatch, capsys):
     assert "- root: tied" in output
 
 
+def test_pull_downloads_checkpoint(monkeypatch, capsys, tmp_path):
+    snapshot = tmp_path / "snapshot"
+    monkeypatch.setattr(cli, "resolve_checkpoint_source", lambda *args, **kwargs: snapshot)
+
+    cli.main(["pull", "--model", "tiny"])
+
+    assert f"Checkpoint: {snapshot}" in capsys.readouterr().out
+
+
 def test_analyze_output_print_accepts_space_separated_lists(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())

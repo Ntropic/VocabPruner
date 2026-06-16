@@ -6,8 +6,10 @@ import socket
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from tokenpruner.architecture import inspect_model_architecture, load_model_config, render_model_architecture
+from tokenpruner.metadata import write_prune_metadata
 from tokenpruner.pipeline import (
     cached_create_only_pipeline,
     resolve_artifact_dir,
@@ -21,6 +23,7 @@ from tokenpruner.pruning import (
     model_vocabulary_size,
     prune_model_and_tokenizer,
     prune_safetensors_checkpoint,
+    resolve_checkpoint_source,
     validate_pruning_architecture,
 )
 from tokenpruner.reports import (
@@ -31,6 +34,8 @@ from tokenpruner.reports import (
     should_show_rows,
 )
 from tokenpruner.scoring import require_wordfreq_threshold, settings_config
+from tokenpruner.hf_cache import cached_checkpoint_status
+from tokenpruner.paths import PRUNED_MODELS_DIR
 from tokenpruner.token_lists import (
     compact_token_maps,
 )
@@ -54,6 +59,10 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser = subparsers.add_parser("inspect", help="Inspect tokenizer vocabulary metadata.")
     inspect_parser.add_argument("--model", required=True, help="Hugging Face model ID or local tokenizer path.")
     inspect_parser.add_argument("--trust-remote-code", action="store_true")
+
+    pull_parser = subparsers.add_parser("pull", help="Download checkpoint shards into the TokenPruner HF cache.")
+    pull_parser.add_argument("--model", required=True, help="Hugging Face model ID or local model path.")
+    pull_parser.add_argument("--trust-remote-code", action="store_true")
 
     analyze_parser = subparsers.add_parser("analyze", help="Classify tokenizer tokens through the shared cached pipeline.")
     analyze_parser.add_argument("--model", required=True, help="Hugging Face model ID or local tokenizer path.")
@@ -80,6 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_show_argument(prune_parser)
     add_create_argument(prune_parser)
     prune_parser.add_argument("--trust-remote-code", action="store_true")
+
     return parser
 
 
@@ -149,6 +159,11 @@ def inspect_command(model: str, trust_remote_code: bool = False) -> None:
         print(f"{key.replace('_', ' ').title()}: {value}")
     print()
     print(render_model_architecture(inspect_model_architecture(config)))
+
+
+def pull_command(model: str, trust_remote_code: bool = False) -> None:
+    source = resolve_checkpoint_source(model, trust_remote_code=trust_remote_code)
+    print(f"Checkpoint: {source}")
 
 
 def analyze_command(
@@ -317,6 +332,8 @@ def prune_command(
             show=show,
             example_counts=example_counts,
         )
+        if not yes and not _is_model_downloaded(model):
+            print("Model checkpoint is not cached locally; pruning may download it.")
         if not yes and not confirm_pruning():
             print("Pruning cancelled.")
             return
@@ -370,6 +387,7 @@ def prune_command(
         shared = f", shared with {surface.shared_with}" if surface.shared_with else ""
         quantized = ", quantized" if surface.quantized else ""
         print(f"- {surface.name}: {surface.kind}{shared}{quantized}")
+    write_prune_metadata(save, source_model=str(resolve_checkpoint_source(model, trust_remote_code=trust_remote_code)), score_config=config)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -378,6 +396,8 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if args.command == "inspect":
         inspect_command(args.model, trust_remote_code=args.trust_remote_code)
+    elif args.command == "pull":
+        pull_command(args.model, trust_remote_code=args.trust_remote_code)
     elif args.command == "analyze":
         analyze_command(
             model=args.model,
@@ -464,10 +484,14 @@ def print_cache_status(cache_dir: Path, reused: bool) -> None:
 
 def confirm_pruning() -> bool:
     try:
-        answer = input("Continue with model download and pruning? [y/N] ")
+        answer = input("Continue with pruning? [y/N] ")
     except EOFError:
         return False
     return answer.strip().lower() in {"y", "yes"}
+
+
+def _is_model_downloaded(model: str) -> bool:
+    return cached_checkpoint_status(model).complete
 
 
 def print_prune_decisions(
