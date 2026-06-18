@@ -93,3 +93,30 @@ def test_checkpoint_resolution_reuses_complete_marker_without_network(tmp_path, 
     )
 
     assert resolve_checkpoint_source("org/model") == snapshot
+
+
+def test_checkpoint_resolution_downloads_all_sidecars_but_ignores_unpruned_weights(tmp_path, monkeypatch):
+    monkeypatch.setattr(hf_cache, "HF_MODELS_DIR", tmp_path / "hf_models")
+    snapshot = tmp_path / "hf_models" / "models--org--model" / "snapshots" / "abc123"
+    calls = {}
+
+    def fake_download(*args, **kwargs):
+        calls.update(kwargs)
+        snapshot.mkdir(parents=True)
+        return str(snapshot)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        types.SimpleNamespace(snapshot_download=fake_download),
+    )
+
+    assert resolve_checkpoint_source("org/model") == snapshot
+    assert calls["allow_patterns"] == ("*",)
+    assert "*.safetensors" not in calls["ignore_patterns"]
+    assert "*.bin" in calls["ignore_patterns"]
+
+    marker = hf_cache.read_download_marker("org/model")
+    assert marker is not None
+    assert marker["allow_patterns"] == ["*"]
+    assert "*.bin" in marker["ignore_patterns"]

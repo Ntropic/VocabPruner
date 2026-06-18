@@ -6,6 +6,7 @@ from tokenpruner.architecture import inspect_model_architecture
 from tokenpruner.pruning import (
     PruneRefusal,
     model_vocabulary_size,
+    prune_model_and_tokenizer,
     prune_safetensors_checkpoint,
     remap_model_config,
     slice_model_vocab,
@@ -217,6 +218,63 @@ def test_slice_model_vocab_preserves_quantized_module_and_row_metadata():
     assert model.lm_head.weight_scale.tolist() == [[2.0, 3.0], [6.0, 7.0]]
     assert model.lm_head.out_features == 2
     assert next(surface for surface in surfaces if surface.kind == "output_head").quantized is True
+
+
+def test_prune_model_and_tokenizer_copies_source_sidecars(monkeypatch, tmp_path):
+    torch = pytest.importorskip("torch")
+
+    class Config:
+        vocab_size = 4
+
+    class FakeModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = Config()
+            self.embed_tokens = torch.nn.Embedding(4, 2)
+
+        def get_input_embeddings(self):
+            return self.embed_tokens
+
+        def get_output_embeddings(self):
+            return None
+
+        def save_pretrained(self, output_dir):
+            (output_dir / "pytorch_model.bin").write_bytes(b"pruned")
+
+    class FakeTokenizer:
+        def save_pretrained(self, output_dir):
+            (output_dir / "tokenizer.json").write_text(
+                json.dumps({"model": {"type": "BPE", "vocab": {"<s>": 0, "hello": 1, "bye": 2, "!": 3}}}),
+                encoding="utf-8",
+            )
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "special_tokens_map.json").write_text(json.dumps({"bos_token": "<s>"}), encoding="utf-8")
+    (source / "chat_template.jinja").write_text("{{ messages }}", encoding="utf-8")
+    (source / "processor").mkdir()
+    (source / "processor" / "config.json").write_text("{}", encoding="utf-8")
+    (source / "processor" / "pytorch_model.bin").write_bytes(b"nested weights")
+    (source / "model.safetensors").write_bytes(b"source weights")
+    monkeypatch.setattr("tokenpruner.vocab.validate_saved_tokenizer", lambda *args, **kwargs: None)
+
+    prune_model_and_tokenizer(
+        model=FakeModel(),
+        tokenizer=FakeTokenizer(),
+        output_dir=tmp_path / "out",
+        retained_token_ids=[0, 2],
+        original_vocab_size=4,
+        model_vocab_size=4,
+        source_dir=source,
+    )
+
+    assert json.loads((tmp_path / "out" / "special_tokens_map.json").read_text(encoding="utf-8")) == {
+        "bos_token": "<s>"
+    }
+    assert (tmp_path / "out" / "chat_template.jinja").read_text(encoding="utf-8") == "{{ messages }}"
+    assert (tmp_path / "out" / "processor" / "config.json").exists()
+    assert not (tmp_path / "out" / "processor" / "pytorch_model.bin").exists()
+    assert not (tmp_path / "out" / "model.safetensors").exists()
 
 
 def test_remap_model_config_updates_text_vocab_and_modality_ids():

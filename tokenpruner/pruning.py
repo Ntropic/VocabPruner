@@ -12,6 +12,7 @@ from typing import Any
 from tokenpruner.architecture import ModelArchitectureReport
 from tokenpruner.hf_cache import (
     CHECKPOINT_ALLOW_PATTERNS,
+    CHECKPOINT_IGNORE_PATTERNS,
     cached_checkpoint_status,
     mark_checkpoint_download,
 )
@@ -183,6 +184,7 @@ def prune_model_and_tokenizer(
     retained_token_ids: list[int],
     original_vocab_size: int,
     model_vocab_size: int | None = None,
+    source_dir: str | Path | None = None,
 ) -> PruneResult:
     old_to_new, new_to_old = compact_token_maps(retained_token_ids)
     if not old_to_new:
@@ -193,6 +195,8 @@ def prune_model_and_tokenizer(
 
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    if source_dir is not None:
+        copy_checkpoint_sidecars(Path(source_dir), output)
     transformed_surfaces = slice_model_vocab(
         model,
         sorted(old_to_new),
@@ -332,14 +336,12 @@ def resolve_checkpoint_source(model: str, trust_remote_code: bool = False) -> Pa
         from huggingface_hub import snapshot_download
     except ImportError as exc:
         raise RuntimeError("huggingface_hub is required to download checkpoint shards.") from exc
-    allow_patterns = CHECKPOINT_ALLOW_PATTERNS + (
-        ("*.py",) if trust_remote_code else ("README.md",)
-    )
     source = Path(
         snapshot_download(
             model,
             cache_dir=HF_MODELS_DIR,
-            allow_patterns=allow_patterns,
+            allow_patterns=CHECKPOINT_ALLOW_PATTERNS,
+            ignore_patterns=CHECKPOINT_IGNORE_PATTERNS,
         )
     )
     mark_checkpoint_download(model, trust_remote_code, source)
@@ -347,7 +349,7 @@ def resolve_checkpoint_source(model: str, trust_remote_code: bool = False) -> Pa
 
 
 def copy_checkpoint_sidecars(source: Path, output: Path) -> None:
-    skip_suffixes = {".safetensors", ".bin", ".pt", ".pth", ".gguf", ".onnx"}
+    skip_suffixes = {".safetensors", *(pattern[1:] for pattern in CHECKPOINT_IGNORE_PATTERNS)}
     skip_names = {"model.safetensors.index.json", "pytorch_model.bin.index.json"}
     for path in source.iterdir():
         if path.name in skip_names or path.suffix in skip_suffixes:
@@ -356,7 +358,11 @@ def copy_checkpoint_sidecars(source: Path, output: Path) -> None:
         if path.is_dir():
             if destination.exists():
                 continue
-            shutil.copytree(path, destination, ignore=shutil.ignore_patterns("*.safetensors", "*.bin", "*.pt", "*.pth"))
+            shutil.copytree(
+                path,
+                destination,
+                ignore=shutil.ignore_patterns("*.safetensors", *CHECKPOINT_IGNORE_PATTERNS),
+            )
         elif path.is_file():
             shutil.copy2(path, destination)
 

@@ -20,10 +20,19 @@ ANALYSIS_ALLOW_PATTERNS = (
     "tokenizer_config.json",
 )
 CHECKPOINT_ALLOW_PATTERNS = (
-    "*.json",
-    "*.safetensors",
-    "*.model",
-    "*.txt",
+    "*",
+)
+CHECKPOINT_IGNORE_PATTERNS = (
+    "*.bin",
+    "*.ckpt",
+    "*.gguf",
+    "*.h5",
+    "*.msgpack",
+    "*.onnx",
+    "*.pb",
+    "*.pt",
+    "*.pth",
+    "*.tflite",
 )
 
 
@@ -75,8 +84,8 @@ def mark_checkpoint_download(model: str, trust_remote_code: bool, snapshot_path:
         model,
         kind="checkpoint",
         trust_remote_code=trust_remote_code,
-        allow_patterns=CHECKPOINT_ALLOW_PATTERNS
-        + (("*.py",) if trust_remote_code else ("README.md",)),
+        allow_patterns=CHECKPOINT_ALLOW_PATTERNS,
+        ignore_patterns=CHECKPOINT_IGNORE_PATTERNS,
         snapshot_path=snapshot_path,
     )
 
@@ -87,6 +96,7 @@ def mark_download(
     kind: str,
     trust_remote_code: bool,
     allow_patterns: tuple[str, ...],
+    ignore_patterns: tuple[str, ...] = (),
     snapshot_path: Path | None = None,
 ) -> None:
     marker_path = download_marker_path(model)
@@ -103,6 +113,8 @@ def mark_download(
         "trust_remote_code": trust_remote_code,
         "allow_patterns": list(allow_patterns),
     }
+    if ignore_patterns:
+        marker["ignore_patterns"] = list(ignore_patterns)
     if snapshot_path is not None:
         marker["snapshot_path"] = str(snapshot_path)
     marker_path.write_text(json.dumps(marker, indent=2, sort_keys=True) + "\n", encoding="utf-8")

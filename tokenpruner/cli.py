@@ -354,6 +354,7 @@ def prune_command(
                 trust_remote_code=trust_remote_code,
                 architecture_report=architecture_report,
             )
+            source_dir = cached_checkpoint_status(model).snapshot_path
             result = prune_model_and_tokenizer(
                 model=loaded_model,
                 tokenizer=tokenizer,
@@ -361,6 +362,7 @@ def prune_command(
                 retained_token_ids=retained_ids,
                 original_vocab_size=len(records),
                 model_vocab_size=checkpoint_vocab_size,
+                source_dir=source_dir if source_dir is not None and source_dir.is_dir() else None,
             )
     except PruneRefusal as exc:
         raise SystemExit(str(exc)) from exc
@@ -387,7 +389,12 @@ def prune_command(
         shared = f", shared with {surface.shared_with}" if surface.shared_with else ""
         quantized = ", quantized" if surface.quantized else ""
         print(f"- {surface.name}: {surface.kind}{shared}{quantized}")
-    write_prune_metadata(save, source_model=str(resolve_checkpoint_source(model, trust_remote_code=trust_remote_code)), score_config=config)
+    metadata_source = cached_checkpoint_status(model).snapshot_path
+    write_prune_metadata(
+        save,
+        source_model=str(metadata_source if metadata_source is not None and metadata_source.exists() else model),
+        score_config=config,
+    )
 
 
 def main(argv: list[str] | None = None) -> None:

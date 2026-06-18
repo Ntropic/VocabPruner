@@ -31,5 +31,6 @@ def write_prune_metadata(pruned_model: str | Path, source_model: str, score_conf
         payload["score_config"] = _to_jsonable(asdict(score_config))
     else:
         payload["score_config"] = _to_jsonable(dict(score_config)) if isinstance(score_config, dict) else {}
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return path
