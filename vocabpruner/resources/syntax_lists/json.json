@@ -1,0 +1,5 @@
+{
+  "characters": "{}[]:,.\\\"-0123456789",
+  "words": ["true", "false", "null"],
+  "ranges": []
+}

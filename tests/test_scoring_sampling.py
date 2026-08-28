@@ -1,6 +1,6 @@
-from tokenpruner.models import TokenRecord
-from tokenpruner.scoring import ScoreConfig, greedy_dictionary_split, score_token
-import tokenpruner.wordfreq_support as support
+from vocabpruner.models import TokenRecord
+from vocabpruner.scoring import ScoreConfig, greedy_dictionary_split, score_token
+import vocabpruner.wordfreq_support as support
 
 
 def setup_function():
@@ -54,7 +54,8 @@ def test_disallowed_script_skips_wordfreq_and_dominates_punctuation():
     record = TokenRecord(4, "中文,", "中文,")
     config = ScoreConfig(
         keep_scripts={"Latin", "Common", "Inherited"},
-        symbol_presets={"ascii-punctuation", "json"},
+        syntax_lists={"json"},
+        symbol_lists={"ascii-punctuation"},
         languages=("en",),
     )
 
@@ -68,7 +69,7 @@ def test_unknown_latin_word_prunes_without_language_evidence():
     record = TokenRecord(9, "qzxq,", "qzxq,")
     config = ScoreConfig(
         keep_scripts={"Latin", "Common", "Inherited"},
-        symbol_presets={"ascii-punctuation"},
+        symbol_lists={"ascii-punctuation"},
         languages=("en",),
     )
 
@@ -82,15 +83,29 @@ def test_unknown_latin_word_does_not_match_json_literal_letters():
     record = TokenRecord(21, "Ġkeindahan", " keindahan")
     config = ScoreConfig(
         keep_scripts={"Latin", "Common", "Inherited"},
-        symbol_presets={"json"},
+        syntax_lists={"json"},
         languages=("en",),
     )
 
     score = score_token(record, config, dictionaries={})
 
-    assert "json" not in score.symbol_presets
-    assert not any("symbol/icon presets matched: json" in explanation for explanation in score.explanations)
+    assert "json" not in score.syntax_lists
+    assert not any("syntax lists matched: json" in explanation for explanation in score.explanations)
     assert score.status == "non_retain_candidate"
+
+
+def test_selected_json_literal_is_retained_without_wordfreq():
+    record = TokenRecord(22, "true", "true")
+    config = ScoreConfig(
+        keep_scripts={"Latin", "Common", "Inherited"},
+        syntax_lists={"json"},
+        languages=(),
+    )
+
+    score = score_token(record, config, dictionaries={})
+
+    assert score.status == "retain_candidate"
+    assert score.syntax_lists == ["json"]
 
 
 def test_known_word_plus_symbol_retains_with_wordfreq_evidence(monkeypatch):
@@ -99,7 +114,7 @@ def test_known_word_plus_symbol_retains_with_wordfreq_evidence(monkeypatch):
     record = TokenRecord(10, "hello,", "hello,")
     config = ScoreConfig(
         keep_scripts={"Latin", "Common", "Inherited"},
-        symbol_presets={"ascii-punctuation"},
+        symbol_lists={"ascii-punctuation"},
         languages=("en",),
         wordfreq_min_zipf=4.0,
     )
@@ -110,11 +125,11 @@ def test_known_word_plus_symbol_retains_with_wordfreq_evidence(monkeypatch):
     assert score.wordfreq_matches
 
 
-def test_symbol_only_token_retains_with_selected_preset():
+def test_symbol_only_token_retains_with_selected_list():
     record = TokenRecord(11, "=>", "=>")
     config = ScoreConfig(
         keep_scripts={"Latin", "Common", "Inherited"},
-        symbol_presets={"coding"},
+        syntax_lists={"coding"},
         languages=(),
     )
 
@@ -123,11 +138,11 @@ def test_symbol_only_token_retains_with_selected_preset():
     assert score.status == "retain_candidate"
 
 
-def test_greek_math_letters_retain_with_mathematics_preset():
+def test_greek_math_letters_retain_with_mathematics_list():
     record = TokenRecord(16, "λ", "λ")
     config = ScoreConfig(
         keep_scripts={"Latin", "Common", "Inherited"},
-        symbol_presets={"mathematics"},
+        symbol_lists={"mathematics"},
         languages=(),
     )
 
@@ -140,7 +155,7 @@ def test_greek_text_still_prunes_without_greek_script():
     record = TokenRecord(17, "λόγος", "λόγος")
     config = ScoreConfig(
         keep_scripts={"Latin", "Common", "Inherited"},
-        symbol_presets={"mathematics"},
+        symbol_lists={"mathematics"},
         languages=(),
     )
 
@@ -153,7 +168,7 @@ def test_single_letters_separated_by_symbols_do_not_need_language_evidence():
     record = TokenRecord(12, "a+b", "a+b")
     config = ScoreConfig(
         keep_scripts={"Latin", "Common", "Inherited"},
-        symbol_presets={"coding"},
+        syntax_lists={"coding"},
         languages=(),
     )
 
@@ -166,7 +181,7 @@ def test_multi_letter_segments_separated_by_symbols_need_language_evidence():
     record = TokenRecord(13, "ab+cd", "ab+cd")
     config = ScoreConfig(
         keep_scripts={"Latin", "Common", "Inherited"},
-        symbol_presets={"coding"},
+        syntax_lists={"coding"},
         languages=(),
     )
 
@@ -180,7 +195,7 @@ def test_escaped_sequences_do_not_require_language_evidence():
     record = TokenRecord(14, "\\n", "\\n")
     config = ScoreConfig(
         keep_scripts={"Latin", "Common", "Inherited"},
-        symbol_presets=set(),
+        symbol_lists=set(),
         languages=(),
     )
 
@@ -189,11 +204,11 @@ def test_escaped_sequences_do_not_require_language_evidence():
     assert score.status == "retain_candidate"
 
 
-def test_unicode_escape_sequence_is_structural_without_symbol_preset():
+def test_unicode_escape_sequence_is_structural_without_symbol_list():
     record = TokenRecord(18, "\\u1234", "\\u1234")
     config = ScoreConfig(
         keep_scripts={"Latin", "Common", "Inherited"},
-        symbol_presets=set(),
+        symbol_lists=set(),
         languages=(),
     )
 
@@ -213,9 +228,9 @@ def test_structural_whitespace_is_protected():
     assert score.status == "protected"
 
 
-def test_emoji_requires_selected_symbol_preset():
+def test_emoji_requires_selected_symbol_list():
     record = TokenRecord(6, "🙂", "🙂")
-    config = ScoreConfig(keep_scripts={"Latin", "Common", "Inherited"}, symbol_presets=set(), languages=())
+    config = ScoreConfig(keep_scripts={"Latin", "Common", "Inherited"}, symbol_lists=set(), languages=())
 
     score = score_token(record, config)
 
@@ -235,7 +250,7 @@ def test_camel_case_identifier_parts_count_as_language_evidence():
     record = TokenRecord(19, "classCallCheck", "classCallCheck")
     config = ScoreConfig(
         keep_scripts={"Latin", "Common", "Inherited"},
-        symbol_presets={"json"},
+        syntax_lists={"json"},
         languages=(),
     )
 
@@ -309,7 +324,7 @@ def test_partial_dictionary_evidence_does_not_override_tree_pruning():
     record = TokenRecord(20, "theros", "theros")
     config = ScoreConfig(
         keep_scripts={"Latin", "Common", "Inherited"},
-        symbol_presets={"json"},
+        syntax_lists={"json"},
         languages=(),
     )
 

@@ -1,4 +1,4 @@
-from tokenpruner.dictionaries import dictionary_matches, load_builtin_dictionaries
+from vocabpruner.dictionaries import dictionary_matches, load_dictionaries
 
 
 def test_dictionary_exact_and_subword_matches():
@@ -13,8 +13,5 @@ def test_dictionary_exact_and_subword_matches():
     assert suffix[0].term == "tokenizer"
 
 
-def test_builtin_dictionaries_load():
-    dictionaries = load_builtin_dictionaries()
-
-    assert "english" in dictionaries
-    assert "hello" in dictionaries["english"]
+def test_no_dictionaries_load_implicitly():
+    assert load_dictionaries() == {}

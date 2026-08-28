@@ -1,2 +1,0 @@
-# Common coding operators, delimiters, and syntax punctuation.
-{}[]()<>+-=*/%&|^~!?:;.,_#@$\'"` 

@@ -1,0 +1,9 @@
+{
+  "characters": "",
+  "categories": [],
+  "ranges": [
+    ["U+3400", "U+4DBF"],
+    ["U+4E00", "U+9FFF"],
+    ["U+F900", "U+FAFF"]
+  ]
+}

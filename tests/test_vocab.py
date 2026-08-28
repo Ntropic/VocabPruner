@@ -1,4 +1,4 @@
-from tokenpruner.vocab import is_byte_fallback_token, tokenizer_records, vocabulary_stats
+from vocabpruner.vocab import is_byte_fallback_token, tokenizer_records, vocabulary_stats
 
 
 class TinyTokenizer:

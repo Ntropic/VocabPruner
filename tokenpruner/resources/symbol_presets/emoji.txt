@@ -1,2 +1,0 @@
-# Emoji is handled by Unicode range detection.
-# Add literal extra emoji characters here if desired.

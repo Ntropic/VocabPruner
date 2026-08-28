@@ -1,5 +1,6 @@
-from tokenpruner.pipeline import arrays_from_facts
-from tokenpruner.scoring import ScoreConfig
+from vocabpruner.models import TokenRecord
+from vocabpruner.pipeline import arrays_from_facts, run_token_pipeline
+from vocabpruner.scoring import ScoreConfig
 
 
 def token_facts():
@@ -48,3 +49,15 @@ def test_arrays_use_best_rank_percent_for_segment_pass():
     assert arrays.best_rank_percent_by_segment[(1, 0)] == 0.01
     assert arrays.segment_wordfreq_passes[(1, 0)] is True
 
+
+def test_selected_syntax_literal_survives_cached_pipeline(tmp_path):
+    result = run_token_pipeline(
+        model="tiny",
+        config=ScoreConfig(syntax_lists={"json"}, languages=()),
+        records=[TokenRecord(0, "true", "true")],
+        cache_root=tmp_path,
+        workers=1,
+    )
+
+    assert result.retained_ids == [0]
+    assert result.scores[0].syntax_lists == ["json"]

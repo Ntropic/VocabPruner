@@ -1,5 +1,5 @@
-from tokenpruner.models import ScriptProfile, TokenRecord, TokenScore
-from tokenpruner.reports import (
+from vocabpruner.models import ScriptProfile, TokenRecord, TokenScore
+from vocabpruner.reports import (
     ExampleCounts,
     example_groups,
     filter_scores,
@@ -33,7 +33,7 @@ def test_render_plain_text_includes_decisions_and_explanations():
 
     report = render_plain_text("tiny", records, scores, seed=42)
 
-    assert "TokenPruner Sample Report" in report
+    assert "VocabPruner Sample Report" in report
     assert "Classified tokens: 1" in report
     assert "Displayed tokens: 1" in report
     assert "'hello'  id=1 status=retain_candidate" in report

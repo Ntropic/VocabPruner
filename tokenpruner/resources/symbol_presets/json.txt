@@ -1,5 +1,0 @@
-# JSON structural characters.
-{}[]:,.\"\-0123456789
-literal:true
-literal:false
-literal:null

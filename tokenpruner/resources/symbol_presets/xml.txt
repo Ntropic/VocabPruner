@@ -1,2 +1,0 @@
-# XML/HTML-like punctuation.
-<>/="'!?-_:.;#&

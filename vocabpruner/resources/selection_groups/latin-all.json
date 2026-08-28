@@ -1,0 +1,5 @@
+{
+  "keep_scripts": ["Latin", "Common", "Inherited"],
+  "syntax_lists": ["all"],
+  "symbol_lists": ["all"]
+}

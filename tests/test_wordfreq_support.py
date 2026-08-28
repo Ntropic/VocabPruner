@@ -1,5 +1,5 @@
-import tokenpruner.wordfreq_support as support
-from tokenpruner.wordfreq_support import wordfreq_matches
+import vocabpruner.wordfreq_support as support
+from vocabpruner.wordfreq_support import wordfreq_matches
 
 
 def setup_module():

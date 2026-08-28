@@ -1,4 +1,4 @@
-from tokenpruner.architecture import inspect_model_architecture, render_model_architecture
+from vocabpruner.architecture import inspect_model_architecture, render_model_architecture
 
 
 class FakeOmniConfig:

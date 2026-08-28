@@ -1,4 +1,4 @@
-from tokenpruner.token_lists import compact_token_maps
+from vocabpruner.token_lists import compact_token_maps
 
 
 def test_compact_token_maps_preserve_old_id_order():

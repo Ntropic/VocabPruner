@@ -2,18 +2,19 @@ import json
 
 import pytest
 
-from tokenpruner.architecture import inspect_model_architecture
-from tokenpruner.pruning import (
+from vocabpruner.architecture import inspect_model_architecture
+from vocabpruner.pruning import (
     PruneRefusal,
     model_vocabulary_size,
     prune_model_and_tokenizer,
     prune_safetensors_checkpoint,
+    remap_generation_config,
     remap_model_config,
     slice_model_vocab,
     validate_pruning_architecture,
     validate_pruning_runtime,
 )
-from tokenpruner.vocab import VocabRewriteError, rewrite_tokenizer_json
+from vocabpruner.vocab import VocabRewriteError, rewrite_tokenizer_json
 
 
 def test_validate_pruning_allows_shared_mtp_and_encoders():
@@ -32,6 +33,30 @@ def test_validate_pruning_allows_shared_mtp_and_encoders():
     validate_pruning_architecture(report, 12)
 
     assert model_vocabulary_size(report, 12) == 16
+
+
+def test_remap_generation_config_updates_token_ids(tmp_path):
+    path = tmp_path / "generation_config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "bos_token_id": 0,
+                "eos_token_id": [2, 0],
+                "pad_token_id": 2,
+                "max_length": 32,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    remap_generation_config(path, {0: 0, 2: 1}, 4)
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "bos_token_id": 0,
+        "eos_token_id": [1, 0],
+        "max_length": 32,
+        "pad_token_id": 1,
+    }
 
 
 def test_validate_pruning_refuses_differently_sized_vocab_surfaces():
@@ -56,7 +81,7 @@ def test_validate_pruning_runtime_names_missing_quantization_dependency(monkeypa
         }
     )
     available = {"torch": True, "modelopt": False}
-    monkeypatch.setattr("tokenpruner.pruning._module_available", lambda name: available.get(name, False))
+    monkeypatch.setattr("vocabpruner.pruning._module_available", lambda name: available.get(name, False))
 
     with pytest.raises(PruneRefusal, match="nvidia-modelopt"):
         validate_pruning_runtime(report)
@@ -255,8 +280,11 @@ def test_prune_model_and_tokenizer_copies_source_sidecars(monkeypatch, tmp_path)
     (source / "processor").mkdir()
     (source / "processor" / "config.json").write_text("{}", encoding="utf-8")
     (source / "processor" / "pytorch_model.bin").write_bytes(b"nested weights")
+    (source / "README.md").write_text("model card", encoding="utf-8")
+    (source / "modelopt_state.pth").write_bytes(b"modelopt state")
     (source / "model.safetensors").write_bytes(b"source weights")
-    monkeypatch.setattr("tokenpruner.vocab.validate_saved_tokenizer", lambda *args, **kwargs: None)
+    (source / "raw_state.pth").write_bytes(b"raw weights")
+    monkeypatch.setattr("vocabpruner.vocab.validate_saved_tokenizer", lambda *args, **kwargs: None)
 
     prune_model_and_tokenizer(
         model=FakeModel(),
@@ -273,8 +301,11 @@ def test_prune_model_and_tokenizer_copies_source_sidecars(monkeypatch, tmp_path)
     }
     assert (tmp_path / "out" / "chat_template.jinja").read_text(encoding="utf-8") == "{{ messages }}"
     assert (tmp_path / "out" / "processor" / "config.json").exists()
+    assert (tmp_path / "out" / "README.md").read_text(encoding="utf-8") == "model card"
+    assert (tmp_path / "out" / "modelopt_state.pth").read_bytes() == b"modelopt state"
     assert not (tmp_path / "out" / "processor" / "pytorch_model.bin").exists()
     assert not (tmp_path / "out" / "model.safetensors").exists()
+    assert not (tmp_path / "out" / "raw_state.pth").exists()
 
 
 def test_remap_model_config_updates_text_vocab_and_modality_ids():
@@ -324,7 +355,20 @@ def test_prune_safetensors_checkpoint_streams_only_vocab_tensors(monkeypatch, tm
     source = tmp_path / "source"
     source.mkdir()
     (source / "config.json").write_text(json.dumps({"vocab_size": 4}), encoding="utf-8")
-    (source / "generation_config.json").write_text(json.dumps({"max_length": 32}), encoding="utf-8")
+    (source / "generation_config.json").write_text(
+        json.dumps(
+            {
+                "bos_token_id": 0,
+                "eos_token_id": [2, 0],
+                "pad_token_id": 2,
+                "max_length": 32,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source / "README.md").write_text("model card", encoding="utf-8")
+    (source / "modelopt_state.pth").write_bytes(b"modelopt state")
+    (source / "raw_state.pth").write_bytes(b"raw weights")
     safetensors.save_file(
         {
             "model.embed_tokens.weight": torch.tensor([[0, 1], [2, 3], [4, 5], [6, 7]], dtype=torch.float32),
@@ -355,7 +399,7 @@ def test_prune_safetensors_checkpoint_streams_only_vocab_tensors(monkeypatch, tm
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr("tokenpruner.vocab.validate_saved_tokenizer", lambda *args, **kwargs: None)
+    monkeypatch.setattr("vocabpruner.vocab.validate_saved_tokenizer", lambda *args, **kwargs: None)
 
     result = prune_safetensors_checkpoint(
         model_source=str(source),
@@ -376,9 +420,20 @@ def test_prune_safetensors_checkpoint_streams_only_vocab_tensors(monkeypatch, tm
     assert tensors["model.layers.0.mlp.down_proj.weight"].tolist() == [[100, 101], [102, 103]]
     assert mtp_tensors["mtp.fc.weight"].tolist() == [[1.0, 2.0], [3.0, 4.0]]
     config = json.loads((tmp_path / "out" / "config.json").read_text(encoding="utf-8"))
+    generation_config = json.loads(
+        (tmp_path / "out" / "generation_config.json").read_text(encoding="utf-8")
+    )
     report = json.loads((tmp_path / "out" / "pruning_report.json").read_text(encoding="utf-8"))
     assert config["vocab_size"] == 2
-    assert (tmp_path / "out" / "generation_config.json").exists()
+    assert generation_config == {
+        "bos_token_id": 0,
+        "eos_token_id": [1, 0],
+        "max_length": 32,
+        "pad_token_id": 1,
+    }
+    assert (tmp_path / "out" / "README.md").read_text(encoding="utf-8") == "model card"
+    assert (tmp_path / "out" / "modelopt_state.pth").read_bytes() == b"modelopt state"
+    assert not (tmp_path / "out" / "raw_state.pth").exists()
     surface_names = {surface.name for surface in result.transformed_surfaces}
     assert surface_names == {"model.embed_tokens", "lm_head"}
     assert result.original_checkpoint_bytes == (source / "model.safetensors").stat().st_size + (

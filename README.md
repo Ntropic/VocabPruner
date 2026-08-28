@@ -1,157 +1,291 @@
-# TokenPruner
+# VocabPruner
 
-TokenPruner analyzes tokenizer vocabularies and decides which tokens to keep for a
-target workload. It combines character scripts, symbol presets, dictionaries, and
-`wordfreq` language evidence with a deterministic accept/prune decision tree.
+Shrink language models to the vocabulary your workload actually needs.
+VocabPruner finds removable tokens, lets you review the result, and produces
+smaller Hugging Face or GGUF checkpoints. Keep the languages, writing systems,
+symbols, and project-specific terms that matter; leave the rest behind.
 
 ## Install
 
 ```bash
-conda activate tokenizer
-pip install -e .
+pip install .
 ```
 
-Shell completion:
+## Example
+As a useful example we keep only the latin alphabet and symbols for mathematical notation, emojis and coding.... 
+
+### Unsloth NVFP4
 
 ```bash
-eval "$(register-python-argcomplete tokenpruner)"
+vocabpruner prune \
+  unsloth/Qwen3.8-27B-NVFP4 \
+  --selection-group latin-all
 ```
 
-Hugging Face token:
+Results for `Qwen3.8-27B-NVFP4` (LM head: FP8 with per column BF16 scaling):
+
+| Metric | Before | After | Difference |
+| --- | ---: | ---: | ---: |
+| Vocabulary | 248,077 | 145,545 | −102,532 (−41.33%) |
+| Checkpoint size | 21.81 GiB | 20.34 GiB | −1.47 GiB (−6.74%) |
+| NVFP4 KV-cache capacity | — | — | ≈68,400 more tokens |
+
+### QUASAR NVFP4
 
 ```bash
-echo 'export HF_TOKEN=<your_token>' >> ~/.bashrc
-source ~/.bashrc
+vocabpruner prune \
+  QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4 \
+  --selection-group latin-all
 ```
 
-Create token: https://huggingface.co/settings/tokens/new
+Results for `Qwen3.8-27B-QUASAR-NVFP4` (LM head: BF16):
 
-## Commands
+| Metric | Before | After | Difference |
+| --- | ---: | ---: | ---: |
+| Vocabulary | 248,077 | 145,545 | −102,532 (−41.33%) |
+| Checkpoint size | 18.36 GiB | 16.40 GiB | −1.96 GiB (−10.68%) |
+| NVFP4 KV-cache capacity | — | — | ≈91,200 more tokens |
 
-- `inspect`: load a tokenizer/model config and report vocabulary metadata.
-- `analyze`: classify vocabularies through the shared cache, print diagnostics, and create generated artifacts.
-- `prune`: prune a supported model with compact text-token IDs; safetensors checkpoints are rewritten shard-by-shard without loading the full model.
-- `benchmark`: compare a pruned model against its original model with token-count, optional quality, and optional speed checks.
-- `benchmark` examples:
-  - `tokenpruner benchmark --model pruned_models/MODEL --datasets wikitext alpaca`
-  - `tokenpruner benchmark --before-model orig --after-model pruned --quality --speed`
-
-## Parameters
-
-- `--model`: Hugging Face model ID or local path.
-- `--languages`: languages for which TokenPruner stores and checks frequency scores.
-- `--wordfreq-min-zipf`: absolute word frequency cutoff; default/recommended threshold style.
-- `--wordfreq-top-pct`: relative top-percent language vocabulary cutoff; alternative to Zipf.
-- `--show`: display mode, e.g. `stats`, `all`, `examples`.
-- `--create`: artifact creation mode, e.g. `list`, `decisions`, `html`.
-- `--save [PATH]`: prune output path or model directory name; omit `PATH` to use a generated name under `pruned_models/`.
-- `--workers`: process workers for token fact creation; cache reuse does not rebuild facts.
-
-- `--keep-script`: allowed Unicode scripts for the character gate.
-- `--symbol-preset`: allowed symbol families such as coding, JSON, mathematics, emoji.
-- `--dictionary`: repeated custom term files for explicit domain/project vocabulary.
-- `--seed`: deterministic `analyze` sampling/examples.
-- `--trust-remote-code`: trust custom code from Hugging Face model repositories.
-- `--yes`: skip prune confirmation prompts.
-
-
-## Example Results
-
-This run keeps Latin/Common/Inherited characters, all built-in symbol presets,
-and English/German/Spanish word-frequency evidence at Zipf >= 3:
+## CLI
 
 ```bash
-tokenpruner prune \
-  --model inferRouter/Qwen3.6-27B-NVFP4 \
-  --keep-script Latin Common Inherited \
-  --symbol-preset all \
-  --languages en de es \
-  --wordfreq-min-zipf 3 \
-  --show stats
+vocabpruner COMMAND MODEL [PARAMETERS]
 ```
 
-For the 35B A3B run, use the same command and change only `--model` to
-`nvidia/Qwen3.6-35B-A3B-NVFP4`.
+### Commands
 
-Both tokenizers started with 248,077 tokens and retained 111,236 tokens, pruning
-136,841 vocabulary entries. The checkpoint savings differ because each model
-stores vocab-facing tensors differently.
-
-| Model | Checkpoint Before | Checkpoint After | Saved | Checkpoint Reduction | Main-Path Bandwidth Saved | MTP-Path Bandwidth Saved |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `inferRouter/Qwen3.6-27B-NVFP4` | 23.82 GB | 21.02 GB | 2.81 GB | 12% | 7% | 41% |
-| `nvidia/Qwen3.6-35B-A3B-NVFP4` | 23.42 GB | 22.70 GB | 0.72 GB | 3% | 5% | 38% |
-
-The 35B model is A3B/MoE, so checkpoint size reduction and active weight
-bandwidth reduction are different views of the same pruning result.
-
-## Scripts
-
-`--keep-script` accepts these script names:
-
-- `Latin`, `Greek`, `Cyrillic`
-- `Arabic`, `Hebrew`, `Devanagari`, `Thai`
-- `Han`, `Hiragana`, `Katakana`, `Hangul`
-- `Common` for punctuation, symbols, numbers, separators, and controls
-- `Inherited` for combining marks
-
-Script selection controls which character families may pass the character gate. It
-does not select a language dictionary. For example, `Latin` can contain English,
-French, German, and many other languages.
-
-## Symbols
-
-`--symbol-preset` accepts these preset names:
-
-- `coding`, `shell`, `json`, `yaml`, `xml`, `markdown`
-- `mathematics` for operators and common Greek math/science letters such as `π`, `λ`, and `Ω`
-- `ascii-punctuation` for ASCII punctuation characters
-- `emoji` for emoji and pictographic symbols
-- `all` to enable every built-in symbol preset
-
-Symbol presets allow specific punctuation, operators, emoji, or math/science
-symbols to pass the character gate without broadly accepting an entire language
-script. For example, `--symbol-preset mathematics` can accept `π` while
-`--keep-script Greek` would more broadly allow Greek-script text.
-
-## Languages
-
-The built-in dictionaries are loaded together by default:
-
-- `english`: general English words
-- `programming`: programming terms
-- `linux`: Linux command names
-- `api`: API and library names
-- `icons`: icon-related terms
-
-The bundled natural-language dictionary is currently English only. Additional
-newline-separated word lists can be supplied by repeating `--dictionary`:
-
-```bash
-tokenpruner analyze \
-  --model Qwen/Qwen3.5-Coder \
-  --dictionary ./dictionaries/german.txt \
-  --dictionary ./dictionaries/french.txt
-```
-
-`--languages` is separate from the bundled dictionaries and accepts the
-following `wordfreq` language codes:
-
-| Languages | Codes |
+| Command | Purpose |
 | --- | --- |
-| Arabic, Bangla, Bosnian, Bulgarian, Catalan, Chinese | `ar`, `bn`, `bs`, `bg`, `ca`, `zh` |
-| Croatian, Czech, Danish, Dutch, English, Finnish | `hr`, `cs`, `da`, `nl`, `en`, `fi` |
-| French, German, Greek, Hebrew, Hindi, Hungarian | `fr`, `de`, `el`, `he`, `hi`, `hu` |
-| Icelandic, Indonesian, Italian, Japanese, Korean, Latvian | `is`, `id`, `it`, `ja`, `ko`, `lv` |
-| Lithuanian, Macedonian, Malay, Norwegian Bokmal, Persian, Polish | `lt`, `mk`, `ms`, `nb`, `fa`, `pl` |
-| Portuguese, Romanian, Russian, Serbian, Slovak, Slovenian | `pt`, `ro`, `ru`, `sr`, `sk`, `sl` |
-| Spanish, Swedish, Tagalog, Tamil, Turkish, Ukrainian | `es`, `sv`, `fil`, `ta`, `tr`, `uk` |
-| Urdu, Vietnamese | `ur`, `vi` |
+| `inspect` | Report vocabulary metadata. |
+| `pull` | Download a model for local use. |
+| `analyze` | Preview retained and removed tokens and create reports. |
+| `prune` | Create a pruned Hugging Face or GGUF checkpoint. |
 
-Bosnian, Croatian, and Serbian share related `wordfreq` data; `sh` is also accepted
-for the shared Serbo-Croatian list. Chinese, Japanese, and Korean may require the
-optional `wordfreq[cjk]` dependencies. See the
-[`wordfreq` supported-language documentation](https://github.com/rspeer/wordfreq#sources-and-supported-languages).
+`MODEL` is a Hugging Face model ID, local model directory, or local `.gguf`
+file.
+
+### Model and Output Paths
+
+Remote models use `--hf-cache PATH` when provided, followed by
+`HF_HUB_CACHE`, `HF_HOME`, and Hugging Face's standard cache location. Local
+models are used in place.
+
+`--save PATH` sets the exact pruned-model directory. Without a path,
+VocabPruner creates `<model-name>-pruned` under `VOCABPRUNER_SAVE_DIR`, or in
+the current directory when that environment variable is unset. Generated
+analysis data uses the operating system's user-cache directory.
+
+### Parameters
+
+`analyze` and `prune` accept the parameters below.
+
+#### Vocabulary Selection
+
+| Parameter | Value | Purpose |
+| --- | --- | --- |
+| `--keep-script` | See below | Preserve writing systems. |
+| `--syntax-list` | See below | Preserve programming and data-format syntax. |
+| `--symbol-list` | See below | Preserve symbol families. |
+| `--languages` | See below | Preserve natural-language vocabulary. |
+| `--selection-group` | See below | Apply grouped script, syntax, and symbol selections. |
+| `--dictionary` | File path; repeatable | Preserve project or domain terms. |
+
+#### Frequency Filtering
+
+| Parameter | Value | Purpose |
+| --- | --- | --- |
+| `--wordfreq-min-zipf` | Number | Keep words at or above an absolute frequency. |
+| `--wordfreq-top-pct` | Percentage | Keep the most frequent percentage of words. |
+
+If neither parameter is provided, word-frequency filtering is disabled.
+
+#### Results
+
+| Parameter | Value | Purpose |
+| --- | --- | --- |
+| `--show` | See below | Print selected results. |
+| `--create` | See below | Create artifacts without printing them. |
+| `--save` | Optional path | Choose the pruned model path. |
+
+#### Run Control
+
+| Parameter | Value | Purpose |
+| --- | --- | --- |
+| `--workers` | Number | Set the number of analysis workers. |
+| `--hf-cache` | Path | Override the Hugging Face cache directory. |
+| `--recreate-list` | Flag | Rebuild cached token data. |
+| `--seed` | Number | Set deterministic sampling. |
+| `--trust-remote-code` | Flag | Trust custom Hugging Face repository code. |
+| `--yes` | Flag | Skip the confirmation prompt. |
+
+### Options
+
+The different parameters support a number of options listed below.
+
+#### --keep-script
+
+| Name | Examples | Size |
+| --- | --- | ---: |
+| `Latin` | A, é, ß, ... | 708 |
+| `Greek` | α, β, Ω, ... | 400 |
+| `Cyrillic` | Ж, Д, я, ... | 304 |
+| `Arabic` | ا, ب, م, ... | 400 |
+| `Hebrew` | א, ב, ש, ... | 112 |
+| `Devanagari` | अ, क, म, ... | 128 |
+| `Thai` | ก, ข, ม, ... | 128 |
+| `Han` | 中, 文, 漢, ... | 28,096 |
+| `Hiragana` | あ, い, ひ, ... | 96 |
+| `Katakana` | ア, イ, カ, ... | 112 |
+| `Hangul` | 한, 글, 가, ... | 11,536 |
+| `Common` | 0, 1, separators¹, controls², ... | 5 |
+| `Inherited` | combining acute ◌́, combining diaeresis ◌̈, ... | 1 |
+| `all` | every script above |  |
+
+¹ Separators are spaces and Unicode line or paragraph separators.
+² Controls include tabs, newlines, control codes, formatting marks,
+surrogates, private-use characters, and unassigned code points.
+
+#### --syntax-list
+
+| Name | Examples | Size |
+| --- | --- | ---: |
+| `coding` | {, }, =, ;, ... | 32 |
+| `shell` | $, \|, >, \*, ... | 22 |
+| `json` | {, }, :, true, false, null, ... | 23 |
+| `yaml` | -, :, #, \|, ... | 20 |
+| `xml` | &lt;, &gt;, /, =, ... | 15 |
+| `markdown` | #, \*, \_, \`, ... | 16 |
+| `all` | every syntax list above |  |
+
+Counts include both characters and reserved words.
+
+#### --symbol-list
+
+| Name | Examples | Size |
+| --- | --- | ---: |
+| `mathematics` | +, =, ×, ∫, π, λ, Ω, ... | 74 |
+| `ascii-punctuation` | !, ?, @, #, ... | 32 |
+| `emoji` | 🙂, ✅, 🚀, ... | 3,523 |
+| `all` | every symbol list above |  |
+
+Symbol lists preserve specific punctuation, operators, emoji, or math/science
+letters without keeping an entire script. For example, `--symbol-list
+mathematics` can keep `π`, while `--keep-script Greek` keeps Greek text more
+broadly.
+
+Syntax and symbol entries participate in compositional matching. For example,
+`hello+world` requires `+` from a selected list and both `hello` and `world`
+to pass the selected language or dictionary rules.
+
+#### --languages
+
+Selects frequency-ranked natural-language vocabulary from `wordfreq`.
+
+| Language | Code | Examples | Size |
+| --- | --- | --- | ---: |
+| English | `en` | the, to, and, ... | 28,917 |
+| German | `de` | die, der, und, ... | 39,277 |
+| Spanish | `es` | de, la, que, ... | 34,925 |
+| French | `fr` | de, la, le, ... | 31,385 |
+| Arabic | `ar` | في, من, على, ... | 56,642 |
+
+These are the sizes of the `wordfreq` small lists used by VocabPruner. See
+[`wordfreq`'s full list of supported languages and codes](https://github.com/rspeer/wordfreq#sources-and-supported-languages).
+
+#### --selection-group
+
+| Name | Scripts | Syntax Lists | Symbol Lists |
+| --- | --- | --- | --- |
+| `latin-all` | Latin, Common, Inherited | all | all |
+
+Groups do not select languages or dictionaries. Add those separately when
+needed.
+
+#### --show
+
+| Option | Purpose |
+| --- | --- |
+| `stats` | Summary counts. |
+| `all` | Every token decision. |
+| `examples` | Sample retained and pruned tokens. |
+| `examples:N` | `N` retained and `N` pruned examples. |
+| `examples:retained=N,pruned=N` | Separate example counts. |
+
+#### --create
+
+| Option | Purpose |
+| --- | --- |
+| `list` | Cached token facts. |
+| `decisions` | Token decisions as JSONL. |
+| `html` | Interactive word-frequency report. |
+
+### --dictionary
+
+Dictionary files are UTF-8 text with one term per line. Matching is
+case-insensitive; blank lines and lines beginning with `#` are ignored.
+
+```text
+# Project terms
+VocabPruner
+tensor-parallel
+NVFP4
+```
+
+Use relative or absolute paths and repeat `--dictionary` for multiple files:
+
+```bash
+--dictionary ./dictionaries/project.txt
+--dictionary /absolute/path/to/domain.txt
+```
+
+### Editing Lists
+
+List options come directly from JSON filenames in
+`vocabpruner/resources/script_lists/`,
+`vocabpruner/resources/syntax_lists/` and
+`vocabpruner/resources/symbol_lists/`. Selection groups come from
+`vocabpruner/resources/selection_groups/`. For example, adding `sql.json`
+creates the `--syntax-list sql` option the next time VocabPruner starts. Each
+syntax or symbol file uses this format:
+
+```json
+{
+  "characters": "{}[]:,.\n",
+  "words": ["true", "false", "null"],
+  "ranges": [["U+1F000", "U+1FAFF"]]
+}
+```
+
+`characters` is a string of individual characters, `words` contains complete
+word matches, and `ranges` contains inclusive Unicode ranges. In JSON, `"\n"`
+means a newline character while `"\\n"` means a backslash followed by `n`.
+Changing a selected list automatically invalidates matching cached decisions.
+
+Script lists use a similar JSON schema:
+
+```json
+{
+  "characters": "",
+  "categories": [],
+  "ranges": [["U+0041", "U+005A"], ["U+0061", "U+007A"]]
+}
+```
+
+`categories` contains Unicode general-category prefixes such as `M` for marks
+or `P` for punctuation. Characters may match multiple script lists and pass
+when any matching list is selected. Python's standard `unicodedata` module
+provides the category assigned to each character.
+
+Selection-group files combine existing lists without selecting languages or
+dictionaries:
+
+```json
+{
+  "keep_scripts": ["Latin", "Common", "Inherited"],
+  "syntax_lists": ["all"],
+  "symbol_lists": ["all"]
+}
+```
 
 ## Structural and Protected Tokens
 
@@ -160,45 +294,3 @@ optional `wordfreq[cjk]` dependencies. See the
 - escape sequences such as `\n`, `\t`, `\xNN`, and `\uNNNN`
 - tokenizer special tokens: BOS, EOS, padding, chat, and modality tokens
 - byte-fallback tokens such as `<0x00>` through `<0xFF>`
-
-## Accept/Prune Decision Tree
-
-TokenPruner first computes threshold-independent retain candidates, then applies
-the selected wordfreq threshold. In cached facts, `retain_candidate` means the
-token passed deterministic protection/script/symbol gates and is eligible for
-language-frequency retention. It does not mean the token is definitely retained
-for every Zipf or top-percent setting.
-
-The final decision is binary:
-
-- `accept`: keep this token as useful/protected for the target workload.
-- `prune`: candidate for removal in a later pruning phase.
-
-```mermaid
-flowchart TD
-    A[Tokenizer token] --> B[Decode token text]
-    B --> C{Protected or structural?}
-    C -->|yes| ACCEPT[accept]
-    C -->|no| D{All characters allowed?}
-    D -->|no| PRUNE[prune]
-    D -->|yes| E[Split into word, symbol, and escape segments]
-
-    E --> F{Has meaningful word segments?}
-    F -->|no| G{All symbol/escape parts allowed?}
-    G -->|yes| ACCEPT
-    G -->|no| PRUNE
-
-    F -->|yes| H["Segment and evaluate words:<br/>• lowercase and greedily split into longest dictionary words<br/>• also try capitalization boundaries, then greedy splitting<br/>• accept known words, complete greedy splits, and tokenizer fragments"]
-    H --> J{Every word segment accepted?}
-    J -->|yes| ACCEPT
-    J -->|no| PRUNE
-```
-
-Examples:
-
-- `中文,` -> `prune` if `Han` is not allowed; the comma does not rescue it.
-- `classCallCheck` -> `accept` if `class`, `call`, and `check` are known.
-- `typescript` -> `accept` if it fully splits into known words: `type` + `script`.
-- `theros` -> `prune`; `the` is known, but `ros` is not, so the full token is not covered.
-- `he` -> `accept` as a tokenizer fragment if it appears inside a known word such as `hello`.
-- `{` -> `accept` with the `json` preset.
