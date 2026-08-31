@@ -1,9 +1,10 @@
+import os
 import sys
 import types
 from pathlib import Path
 
 from vocabpruner import hf_cache
-from vocabpruner.paths import hf_models_dir
+from vocabpruner.paths import USER_ENV_TEMPLATE, hf_models_dir, load_user_env
 from vocabpruner.pruning import resolve_checkpoint_source
 
 
@@ -12,6 +13,20 @@ def test_hf_home_selects_standard_hub_directory(tmp_path, monkeypatch):
     monkeypatch.setenv("HF_HOME", str(tmp_path / "huggingface"))
 
     assert hf_models_dir() == tmp_path / "huggingface" / "hub"
+
+
+def test_user_env_is_created_and_overrides_shell(monkeypatch, tmp_path):
+    path = tmp_path / ".vocabpruner" / ".env"
+    load_user_env(path, create=True)
+    assert path.read_text(encoding="utf-8") == USER_ENV_TEMPLATE
+
+    path.write_text("HF_HOME='/from-file'\nVOCABPRUNER_SAVE_DIR=/models\n", encoding="utf-8")
+    monkeypatch.setenv("HF_HOME", "/from-shell")
+    monkeypatch.delenv("VOCABPRUNER_SAVE_DIR", raising=False)
+    load_user_env(path)
+    assert os.environ["HF_HOME"] == "/from-file"
+    assert os.environ["VOCABPRUNER_SAVE_DIR"] == "/models"
+    os.environ.pop("VOCABPRUNER_SAVE_DIR")
 
 
 def test_analysis_download_marker_reports_incomplete_checkpoint(tmp_path, monkeypatch):

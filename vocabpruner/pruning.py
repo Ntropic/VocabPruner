@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from vocabpruner.architecture import ModelArchitectureReport
+from vocabpruner.codebooks import codebook_config_ids, codebook_tensor_axis
 from vocabpruner.hf_cache import (
     CHECKPOINT_ALLOW_PATTERNS,
     CHECKPOINT_IGNORE_PATTERNS,
@@ -216,6 +217,7 @@ def prune_model_and_tokenizer(
         old_to_new=old_to_new,
         new_to_old=new_to_old,
         original_vocab_size=original_vocab_size,
+        source_model_vocab_size=model_vocab_size,
         transformed_surfaces=transformed_surfaces,
         original_checkpoint_bytes=None,
         pruned_checkpoint_bytes=pruned_checkpoint_bytes,
@@ -234,7 +236,7 @@ def prune_model_and_tokenizer(
 def prune_safetensors_checkpoint(
     *,
     model_source: str,
-    tokenizer: Any,
+    tokenizer: Any | None,
     config: Any,
     output_dir: str | Path,
     retained_token_ids: list[int],
@@ -270,10 +272,11 @@ def prune_safetensors_checkpoint(
     copy_checkpoint_sidecars(source, output)
     write_pruned_config(config, output / "config.json", old_to_new, model_vocab_size)
     remap_generation_config(output / "generation_config.json", old_to_new, model_vocab_size)
-    try:
-        save_remapped_tokenizer(tokenizer, output, old_to_new)
-    except VocabRewriteError as exc:
-        raise PruneRefusal(str(exc)) from exc
+    if tokenizer is not None:
+        try:
+            save_remapped_tokenizer(tokenizer, output, old_to_new)
+        except VocabRewriteError as exc:
+            raise PruneRefusal(str(exc)) from exc
 
     total_size = 0
     grouped_surfaces: dict[str, dict[str, Any]] = {}
@@ -286,14 +289,15 @@ def prune_safetensors_checkpoint(
             metadata = handle.metadata()
             for name in handle.keys():
                 tensor = handle.get_tensor(name)
-                if is_checkpoint_vocab_tensor(name, tensor.shape, model_vocab_size):
-                    tensor = tensor.index_select(0, retained).contiguous()
+                axis = checkpoint_vocab_axis(name, tensor.shape, model_vocab_size)
+                if axis is not None:
+                    tensor = tensor.index_select(axis, retained).contiguous()
                     record_checkpoint_surface(grouped_surfaces, name)
                 tensors[name] = tensor
                 total_size += int(tensor.numel() * tensor.element_size())
         save_file(tensors, output / source_path.name, metadata=metadata)
 
-    if not grouped_surfaces:
+    if not grouped_surfaces and not codebook_config_ids(config):
         raise PruneRefusal("No vocabulary-bearing safetensors were found to slice.")
     write_safetensors_index(output, index, total_size)
     pruned_checkpoint_bytes = checkpoint_file_size(output)
@@ -312,6 +316,7 @@ def prune_safetensors_checkpoint(
         old_to_new=old_to_new,
         new_to_old=new_to_old,
         original_vocab_size=original_vocab_size,
+        source_model_vocab_size=model_vocab_size,
         transformed_surfaces=transformed_surfaces,
         original_checkpoint_bytes=original_checkpoint_bytes,
         pruned_checkpoint_bytes=pruned_checkpoint_bytes,
@@ -363,6 +368,7 @@ def prune_gguf_checkpoint(
         old_to_new=old_to_new,
         new_to_old=new_to_old,
         original_vocab_size=original_vocab_size,
+        source_model_vocab_size=original_vocab_size,
         transformed_surfaces=surfaces,
         original_checkpoint_bytes=source.stat().st_size,
         pruned_checkpoint_bytes=rewritten.stat().st_size,
@@ -506,6 +512,12 @@ def is_checkpoint_vocab_tensor(
         return False
     lowered = name.lower()
     return any(marker in lowered for marker in VOCABULARY_NAME_MARKERS)
+
+
+def checkpoint_vocab_axis(name: str, shape: Any, original_vocab_size: int) -> int | None:
+    if is_checkpoint_vocab_tensor(name, shape, original_vocab_size):
+        return 0
+    return codebook_tensor_axis(name, shape, original_vocab_size)
 
 
 def record_checkpoint_surface(grouped: dict[str, dict[str, Any]], tensor_name: str) -> None:
@@ -690,6 +702,7 @@ def write_pruning_maps(
     old_to_new: dict[int, int],
     new_to_old: dict[int, int],
     original_vocab_size: int,
+    source_model_vocab_size: int | None = None,
     transformed_surfaces: tuple[TransformedSurface, ...] = (),
     original_checkpoint_bytes: int | None = None,
     pruned_checkpoint_bytes: int | None = None,
@@ -707,6 +720,7 @@ def write_pruning_maps(
         json.dumps(
             {
                 "original_vocab_size": original_vocab_size,
+                "source_model_vocab_size": source_model_vocab_size or original_vocab_size,
                 "retained_vocab_size": len(old_to_new),
                 "pruned_vocab_size": original_vocab_size - len(old_to_new),
                 "original_checkpoint_bytes": original_checkpoint_bytes,

@@ -374,6 +374,18 @@ def test_prune_safetensors_checkpoint_streams_only_vocab_tensors(monkeypatch, tm
             "model.embed_tokens.weight": torch.tensor([[0, 1], [2, 3], [4, 5], [6, 7]], dtype=torch.float32),
             "lm_head.weight": torch.tensor([[10, 11], [12, 13], [14, 15], [16, 17]], dtype=torch.float32),
             "lm_head.weight_scale": torch.tensor([[1], [2], [3], [4]], dtype=torch.float32),
+            "model.candidate_selector.predecessor_codebook": torch.tensor(
+                [[20, 21], [22, 23], [24, 25], [26, 27]], dtype=torch.float32
+            ),
+            "model.candidate_selector.successor_codebook": torch.tensor(
+                [[30, 31], [32, 33], [34, 35], [36, 37]], dtype=torch.float32
+            ),
+            "mtp.0.markov_head.markov_w1.weight": torch.tensor(
+                [[40, 41], [42, 43], [44, 45], [46, 47]], dtype=torch.float32
+            ),
+            "mtp.0.markov_head.markov_w2.weight": torch.tensor(
+                [[50, 51], [52, 53], [54, 55], [56, 57]], dtype=torch.float32
+            ),
             "model.layers.0.mlp.down_proj.weight": torch.tensor([[100, 101], [102, 103]], dtype=torch.float32),
         },
         source / "model.safetensors",
@@ -392,6 +404,10 @@ def test_prune_safetensors_checkpoint_streams_only_vocab_tensors(monkeypatch, tm
                     "model.embed_tokens.weight": "model.safetensors",
                     "lm_head.weight": "model.safetensors",
                     "lm_head.weight_scale": "model.safetensors",
+                    "model.candidate_selector.predecessor_codebook": "model.safetensors",
+                    "model.candidate_selector.successor_codebook": "model.safetensors",
+                    "mtp.0.markov_head.markov_w1.weight": "model.safetensors",
+                    "mtp.0.markov_head.markov_w2.weight": "model.safetensors",
                     "model.layers.0.mlp.down_proj.weight": "model.safetensors",
                     "mtp.fc.weight": "model_mtp.safetensors",
                 },
@@ -417,6 +433,10 @@ def test_prune_safetensors_checkpoint_streams_only_vocab_tensors(monkeypatch, tm
     assert tensors["model.embed_tokens.weight"].tolist() == [[0, 1], [4, 5]]
     assert tensors["lm_head.weight"].tolist() == [[10, 11], [14, 15]]
     assert tensors["lm_head.weight_scale"].tolist() == [[1], [3]]
+    assert tensors["model.candidate_selector.predecessor_codebook"].tolist() == [[20, 21], [24, 25]]
+    assert tensors["model.candidate_selector.successor_codebook"].tolist() == [[30, 31], [34, 35]]
+    assert tensors["mtp.0.markov_head.markov_w1.weight"].tolist() == [[40, 41], [44, 45]]
+    assert tensors["mtp.0.markov_head.markov_w2.weight"].tolist() == [[50, 51], [54, 55]]
     assert tensors["model.layers.0.mlp.down_proj.weight"].tolist() == [[100, 101], [102, 103]]
     assert mtp_tensors["mtp.fc.weight"].tolist() == [[1.0, 2.0], [3.0, 4.0]]
     config = json.loads((tmp_path / "out" / "config.json").read_text(encoding="utf-8"))
@@ -435,7 +455,13 @@ def test_prune_safetensors_checkpoint_streams_only_vocab_tensors(monkeypatch, tm
     assert (tmp_path / "out" / "modelopt_state.pth").read_bytes() == b"modelopt state"
     assert not (tmp_path / "out" / "raw_state.pth").exists()
     surface_names = {surface.name for surface in result.transformed_surfaces}
-    assert surface_names == {"model.embed_tokens", "lm_head"}
+    assert surface_names == {
+        "model.embed_tokens",
+        "lm_head",
+        "model.candidate_selector",
+        "mtp.0.markov_head.markov_w1",
+        "mtp.0.markov_head.markov_w2",
+    }
     assert result.original_checkpoint_bytes == (source / "model.safetensors").stat().st_size + (
         source / "model_mtp.safetensors"
     ).stat().st_size

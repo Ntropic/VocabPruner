@@ -8,7 +8,6 @@ dependencies = [
     "datasets>=2.19",
     "gguf>=0.19",
     "numpy>=1.26",
-    "platformdirs>=4.2",
     "pydantic>=2.7",
     "psutil>=5.9",
     "regex>=2024.5.15",

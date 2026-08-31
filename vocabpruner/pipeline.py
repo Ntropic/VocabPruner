@@ -147,6 +147,7 @@ def resolve_artifact_dir(
     model: str,
     config: ScoreConfig,
     seed: int | None = None,
+    suffix: str | None = None,
 ) -> Path:
     if output_dir is not None:
         return Path(output_dir).expanduser().resolve()
@@ -155,7 +156,8 @@ def resolve_artifact_dir(
         if model_name.lower().endswith(".gguf"):
             model_name = model_name[:-5]
         model_name = re.sub(r"[^A-Za-z0-9._-]+", "-", model_name).strip("-") or "model"
-        return pruned_models_dir() / f"{model_name}-pruned"
+        suffix = re.sub(r"[^A-Za-z0-9._-]+", "-", suffix or "").strip("-")
+        return pruned_models_dir() / f"{model_name}-{suffix or 'pruned'}"
     parts = [compact_settings_slug(model, config, include_threshold=True)]
     if seed is not None:
         parts.append(f"seed-{seed}")

@@ -1,9 +1,11 @@
 # VocabPruner
 
-Shrink language models to the vocabulary your workload actually needs.
-VocabPruner finds removable tokens, lets you review the result, and produces
-smaller Hugging Face or GGUF checkpoints. Keep the languages, writing systems,
-symbols, and project-specific terms that matter; leave the rest behind.
+Shrink language models tokenizers to the vocabulary your workload actually needs.
+VocabPruner helps you reduce the dictionary of your LLM's, to produce
+smaller Hugging Face or GGUF checkpoints. Keep only the languages, writing systems,
+symbols, and project-specific terms that matter to your workflows. For such workflows this will not degrade the capabilities of your model, while increasing the KV cache your VRAM supports.
+VocabPruner supports standard language models, MTP models, and DFlash 1/2 and
+DSpark 1/2 speculative decoding models.
 
 ## Install
 
@@ -12,68 +14,76 @@ pip install .
 ```
 
 ## Example
-As a useful example we keep only the latin alphabet and symbols for mathematical notation, emojis and coding.... 
-
-### Unsloth NVFP4
-
-```bash
-vocabpruner prune \
-  unsloth/Qwen3.8-27B-NVFP4 \
-  --selection-group latin-all
-```
-
-Results for `Qwen3.8-27B-NVFP4` (LM head: FP8 with per column BF16 scaling):
-
-| Metric | Before | After | Difference |
-| --- | ---: | ---: | ---: |
-| Vocabulary | 248,077 | 145,545 | −102,532 (−41.33%) |
-| Checkpoint size | 21.81 GiB | 20.34 GiB | −1.47 GiB (−6.74%) |
-| NVFP4 KV-cache capacity | — | — | ≈68,400 more tokens |
-
-### QUASAR NVFP4
+In the following example, `latin-all` keeps Latin text and a practical group
+of useful symbols, including mathematical notation, emoji, ASCII punctuation, programming and data-format syntax. Tokens used only by unselected writing systems, such as Cyrillic, Arabic, Han, Hiragana, Katakana, and Hangul are removed.
 
 ```bash
 vocabpruner prune \
   QUASAR-QAT/Qwen3.8-27B-QUASAR-NVFP4 \
-  --selection-group latin-all
+  --selection-group latin-all \
+  --save-suffix latin-all
 ```
-
-Results for `Qwen3.8-27B-QUASAR-NVFP4` (LM head: BF16):
-
 | Metric | Before | After | Difference |
 | --- | ---: | ---: | ---: |
 | Vocabulary | 248,077 | 145,545 | −102,532 (−41.33%) |
 | Checkpoint size | 18.36 GiB | 16.40 GiB | −1.96 GiB (−10.68%) |
 | NVFP4 KV-cache capacity | — | — | ≈91,200 more tokens |
 
+### Example Output
+
+> **Pruned (`latin-all`)**
+>
+> **User:** Say "Hello World" in Japanese.
+>
+> **Assistant:** In Japanese, "Hello World" is "Hello, World" (Konnichiwa, Zaawoorudo).
+
+> **Unpruned (original)**
+>
+> **User:** Say "Hello World" in Japanese.
+>
+> **Assistant:** In Japanese, "Hello World" is "こんにちは世界" (Konnichiwa, Zaawoorudo).
+
+The pruned model still understands the request, but `latin-all` removes
+Japanese characters. It therefore approximates the answer with retained
+Latin-script tokens: English words and romanized Japanese. For requests that
+do not require removed scripts, behavior remains unchanged apart from minor
+logit shifts that do not alter the ordering of the top-k candidates.
+
+### Pruning Speculative Decoding Models
+The pruned target directory contains the finalized old-to-new token-ID map.
+Use `--related-model` to find that output by model name and apply its exact map
+to a speculative decoding model that shares the target's original vocabulary:
+
+```bash
+vocabpruner prune \
+  josch15366/Qwen3.8-27B-DFlash2-FP8 \
+  --related-model Qwen3.8-27B-QUASAR-NVFP4-latin-all \
+  --save-suffix latin-all
+```
+
+`--related-model` resolves the exact directory name under
+`VOCABPRUNER_SAVE_DIR`, or the current directory when it is unset. It also
+accepts an existing path. Use `--related-path` to require explicit path
+resolution.
+
 ## CLI
 
 ```bash
-vocabpruner COMMAND MODEL [PARAMETERS]
+vocabpruner COMMAND [MODEL] [PARAMETERS]
 ```
 
 ### Commands
 
 | Command | Purpose |
 | --- | --- |
-| `inspect` | Report vocabulary metadata. |
-| `pull` | Download a model for local use. |
-| `analyze` | Preview retained and removed tokens and create reports. |
-| `prune` | Create a pruned Hugging Face or GGUF checkpoint. |
+| `init` | Create the optional user `.env` file. |
+| `inspect [MODEL]` | Report vocabulary metadata. |
+| `pull [MODEL]` | Download a model for local use. |
+| `analyze [MODEL]` | Preview retained and removed tokens and create reports. |
+| `prune [MODEL]` | Create a pruned Hugging Face or GGUF checkpoint. |
 
-`MODEL` is a Hugging Face model ID, local model directory, or local `.gguf`
-file.
-
-### Model and Output Paths
-
-Remote models use `--hf-cache PATH` when provided, followed by
-`HF_HUB_CACHE`, `HF_HOME`, and Hugging Face's standard cache location. Local
-models are used in place.
-
-`--save PATH` sets the exact pruned-model directory. Without a path,
-VocabPruner creates `<model-name>-pruned` under `VOCABPRUNER_SAVE_DIR`, or in
-the current directory when that environment variable is unset. Generated
-analysis data uses the operating system's user-cache directory.
+For commands that take `MODEL`, it is a Hugging Face model ID, local model
+directory, or local `.gguf` file.
 
 ### Parameters
 
@@ -106,13 +116,15 @@ If neither parameter is provided, word-frequency filtering is disabled.
 | `--show` | See below | Print selected results. |
 | `--create` | See below | Create artifacts without printing them. |
 | `--save` | Optional path | Choose the pruned model path. |
+| `--save-suffix` | Suffix | Replace the default `pruned` suffix. |
+| `--related-path` | Pruned-model directory | Reuse its finalized token map. |
+| `--related-model` | Model name or path | Reuse a named or explicit pruned-model directory. |
 
 #### Run Control
 
 | Parameter | Value | Purpose |
 | --- | --- | --- |
 | `--workers` | Number | Set the number of analysis workers. |
-| `--hf-cache` | Path | Override the Hugging Face cache directory. |
 | `--recreate-list` | Flag | Rebuild cached token data. |
 | `--seed` | Number | Set deterministic sampling. |
 | `--trust-remote-code` | Flag | Trust custom Hugging Face repository code. |
@@ -294,3 +306,26 @@ dictionaries:
 - escape sequences such as `\n`, `\t`, `\xNN`, and `\uNNNN`
 - tokenizer special tokens: BOS, EOS, padding, chat, and modality tokens
 - byte-fallback tokens such as `<0x00>` through `<0xFF>`
+
+## Environment
+
+VocabPruner loads the optional `~/.vocabpruner/.env` file. Create it with
+commented examples when wanted:
+
+```bash
+vocabpruner init
+```
+
+Existing files are not overwritten. Values in this file override variables
+inherited from the shell; explicit command-line options still take precedence.
+
+| Variable | Purpose |
+| --- | --- |
+| `VOCABPRUNER_SAVE_DIR` | Default parent directory for pruned models. Defaults to the current directory. |
+| `HF_HUB_CACHE` | Hugging Face model cache. |
+| `HF_HOME` | Uses `<HF_HOME>/hub` when `HF_HUB_CACHE` is unset. |
+| `XDG_CACHE_HOME` | Base cache directory when no Hugging Face cache variable is set; also controls the VocabPruner analysis cache on Linux. |
+
+
+The analysis cache normally lives at
+`${XDG_CACHE_HOME:-~/.cache}/vocabpruner` on Linux.

@@ -1,0 +1,13 @@
+{
+  "tensors": [
+    {"suffix": "embed.weight", "axis": 0},
+    {"suffix": "embed.scale", "axis": 0},
+    {"suffix": "embed.weight_scale", "axis": 0},
+    {"suffix": "embed.weight_scale_inv", "axis": 0},
+    {"suffix": "head.weight", "axis": 0},
+    {"suffix": "head.scale", "axis": 0},
+    {"suffix": "head.weight_scale", "axis": 0},
+    {"suffix": "head.weight_scale_inv", "axis": 0}
+  ],
+  "config_token_ids": []
+}

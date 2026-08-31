@@ -1,0 +1,7 @@
+{
+  "tensors": [
+    {"suffix": "candidate_selector.predecessor_codebook", "axis": 0},
+    {"suffix": "candidate_selector.successor_codebook", "axis": 0}
+  ],
+  "config_token_ids": ["dflash_config.mask_token_id"]
+}

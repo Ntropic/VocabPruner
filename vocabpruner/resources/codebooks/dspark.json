@@ -1,0 +1,16 @@
+{
+  "tensors": [
+    {"suffix": "markov_head.markov_w1.weight", "axis": 0},
+    {"suffix": "markov_head.markov_w1.scale", "axis": 0},
+    {"suffix": "markov_head.markov_w1.weight_scale", "axis": 0},
+    {"suffix": "markov_head.markov_w1.weight_scale_inv", "axis": 0},
+    {"suffix": "markov_head.markov_w2.weight", "axis": 0},
+    {"suffix": "markov_head.markov_w2.scale", "axis": 0},
+    {"suffix": "markov_head.markov_w2.weight_scale", "axis": 0},
+    {"suffix": "markov_head.markov_w2.weight_scale_inv", "axis": 0}
+  ],
+  "config_token_ids": [
+    "dflash_config.mask_token_id",
+    "dspark_noise_token_id"
+  ]
+}

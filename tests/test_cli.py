@@ -1,4 +1,3 @@
-import os
 import shutil
 from pathlib import Path
 
@@ -26,6 +25,15 @@ def allow_pruning_runtime(monkeypatch, tmp_path):
     yield
     shutil.rmtree(lists_dir, ignore_errors=True)
     shutil.rmtree(decisions_dir, ignore_errors=True)
+
+
+def test_init_creates_optional_environment_file(monkeypatch, capsys, tmp_path):
+    env_path = tmp_path / ".vocabpruner" / ".env"
+    monkeypatch.setattr(cli, "load_user_env", lambda *, create: env_path)
+
+    cli.main(["init"])
+
+    assert capsys.readouterr().out == f"Environment file: {env_path}\n"
 
 
 class TinyTokenizer:
@@ -620,21 +628,6 @@ def test_prune_uses_save_directory_environment_variable(monkeypatch, capsys, tmp
     cli.main(["prune", "org/TinyModel", "--wordfreq-min-zipf", "4"])
 
     assert f"Save: {save_root / 'TinyModel-pruned'}" in capsys.readouterr().out
-
-
-def test_hf_cache_argument_overrides_environment(monkeypatch, capsys, tmp_path):
-    cache = tmp_path / "hf"
-
-    def resolve(model, **kwargs):
-        assert os.environ["HF_HUB_CACHE"] == str(cache)
-        return cache / "snapshot"
-
-    monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path / "old"))
-    monkeypatch.setattr(cli, "resolve_checkpoint_source", resolve)
-
-    cli.main(["pull", "org/model", "--hf-cache", str(cache)])
-
-    assert f"Checkpoint: {cache / 'snapshot'}" in capsys.readouterr().out
 
 
 def test_prune_defaults_to_summary_and_can_show_examples(monkeypatch, capsys, tmp_path):

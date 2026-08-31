@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import socket
 import subprocess
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from vocabpruner.architecture import inspect_model_architecture, load_model_config, render_model_architecture
+from vocabpruner.codebooks import codebook_config_ids
 from vocabpruner.metadata import write_prune_metadata
 from vocabpruner.pipeline import (
     cached_create_only_pipeline,
@@ -16,6 +18,7 @@ from vocabpruner.pipeline import (
     run_token_pipeline,
     write_create_artifacts,
 )
+from vocabpruner.paths import load_user_env, pruned_models_dir
 from vocabpruner.pruning import (
     PruneRefusal,
     ensure_pruning_runtime,
@@ -53,6 +56,48 @@ def default_workers() -> int:
     return max(1, cpu_count - 2)
 
 
+def load_related_token_ids(directory: Path, source_vocab_size: int) -> list[int]:
+    map_path = directory / "old_to_new_token_ids.json"
+    report_path = directory / "pruning_report.json"
+    if not map_path.is_file() or not report_path.is_file():
+        raise PruneRefusal(f"Related model directory lacks pruning map metadata: {directory}")
+    try:
+        raw_map = json.loads(map_path.read_text(encoding="utf-8"))
+        old_to_new = {int(old): int(new) for old, new in raw_map.items()}
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        reference_vocab_size = int(report.get("source_model_vocab_size", report["original_vocab_size"]))
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise PruneRefusal(f"Invalid related pruning map metadata: {directory}") from exc
+    if "source_model_vocab_size" not in report and reference_vocab_size != source_vocab_size:
+        try:
+            metadata = json.loads((directory / "vocabpruner_model.json").read_text(encoding="utf-8"))
+            source_dir = Path(metadata["source_model"]).expanduser()
+            source_config = json.loads((source_dir / "config.json").read_text(encoding="utf-8"))
+            source_sizes = {size for _, size in inspect_model_architecture(source_config).vocabulary_surfaces}
+            if source_vocab_size in source_sizes:
+                reference_vocab_size = source_vocab_size
+        except (OSError, KeyError, TypeError, json.JSONDecodeError):
+            pass
+    expected, _ = compact_token_maps(list(old_to_new))
+    if not old_to_new or old_to_new != expected:
+        raise PruneRefusal("Related token map must be a nonempty compact old-ID to new-ID map.")
+    if reference_vocab_size != source_vocab_size:
+        raise PruneRefusal(
+            f"Related source vocabulary has {reference_vocab_size} tokens; model has {source_vocab_size}."
+        )
+    if min(old_to_new) < 0 or max(old_to_new) >= source_vocab_size:
+        raise PruneRefusal("Related token map contains IDs outside the source vocabulary.")
+    return sorted(old_to_new)
+
+
+def resolve_related_model_dir(model_or_path: str) -> Path:
+    path = Path(model_or_path).expanduser()
+    if path.exists() or path.is_absolute() or model_or_path.startswith((".", "~")):
+        return path.resolve()
+    name = path.name
+    return pruned_models_dir() / name
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vocabpruner",
@@ -60,14 +105,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    subparsers.add_parser("init", help="Create the optional ~/.vocabpruner/.env file.")
+
     inspect_parser = subparsers.add_parser("inspect", help="Inspect tokenizer vocabulary metadata.")
     inspect_parser.add_argument("model", metavar="MODEL", help="Hugging Face model ID or local tokenizer path.")
-    add_hf_cache_argument(inspect_parser)
     inspect_parser.add_argument("--trust-remote-code", action="store_true")
 
     pull_parser = subparsers.add_parser("pull", help="Download checkpoint shards into the Hugging Face cache.")
     pull_parser.add_argument("model", metavar="MODEL", help="Hugging Face model ID or local model path.")
-    add_hf_cache_argument(pull_parser)
     pull_parser.add_argument("--trust-remote-code", action="store_true")
 
     analyze_parser = subparsers.add_parser("analyze", help="Classify tokenizer tokens through the shared cached pipeline.")
@@ -77,7 +122,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_worker_argument(analyze_parser)
     add_show_argument(analyze_parser)
     add_create_argument(analyze_parser)
-    add_hf_cache_argument(analyze_parser)
     analyze_parser.add_argument("--recreate-list", action="store_true", help="Rebuild the cached token list.")
     analyze_parser.add_argument("--trust-remote-code", action="store_true")
 
@@ -86,7 +130,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Prune supported language or multimodal models with compact text-token IDs.",
     )
     prune_parser.add_argument("model", metavar="MODEL", help="Hugging Face model ID or local model path.")
-    add_save_argument(prune_parser, "Path for the pruned model.", default=DEFAULT_SAVE)
+    save_group = prune_parser.add_mutually_exclusive_group()
+    add_save_argument(save_group, "Path for the pruned model.", default=DEFAULT_SAVE)
+    save_group.add_argument(
+        "--save-suffix",
+        type=save_suffix_arg,
+        metavar="SUFFIX",
+        help="Append SUFFIX to the generated default pruned-model name.",
+    )
     prune_parser.add_argument(
         "--yes",
         action="store_true",
@@ -96,9 +147,15 @@ def build_parser() -> argparse.ArgumentParser:
     add_worker_argument(prune_parser)
     add_show_argument(prune_parser)
     add_create_argument(prune_parser)
-    add_hf_cache_argument(prune_parser)
     prune_parser.add_argument("--recreate-list", action="store_true", help="Rebuild the cached token list.")
     prune_parser.add_argument("--trust-remote-code", action="store_true")
+    related = prune_parser.add_mutually_exclusive_group()
+    related.add_argument("--related-path", metavar="PATH", help="Reuse a token map from a pruned model directory.")
+    related.add_argument(
+        "--related-model",
+        metavar="MODEL",
+        help="Reuse a token map from an existing path or a model in the default pruned-model directory.",
+    )
 
     return parser
 
@@ -137,6 +194,12 @@ def add_settings_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--wordfreq-top-pct", type=float)
 
 
+def save_suffix_arg(value: str) -> str:
+    if not any(character.isascii() and character.isalnum() for character in value):
+        raise argparse.ArgumentTypeError("suffix must contain an ASCII letter or number")
+    return value
+
+
 def add_worker_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--workers",
@@ -144,10 +207,6 @@ def add_worker_argument(parser: argparse.ArgumentParser) -> None:
         default=default_workers(),
         help="Process workers for token fact creation. Defaults to CPU count minus 2.",
     )
-
-
-def add_hf_cache_argument(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--hf-cache", metavar="PATH", help="Override the Hugging Face cache directory.")
 
 
 def add_save_argument(parser: argparse.ArgumentParser, help_text: str, default: str | None = None) -> None:
@@ -298,20 +357,16 @@ def prune_command(
     recreate_list: bool = False,
     yes: bool = False,
     trust_remote_code: bool = False,
+    related_path: str | None = None,
+    related_model: str | None = None,
+    save_suffix: str | None = None,
 ) -> None:
     if workers < 1:
         raise SystemExit("--workers must be at least 1")
-    tokenizer = load_tokenizer(model, trust_remote_code=trust_remote_code)
-    records = tokenizer_records(tokenizer)
     show, example_counts = normalize_show_args(show, default=["stats"])
     create = normalize_create_args(create)
     model_config = load_model_config(model, trust_remote_code=trust_remote_code)
     architecture_report = inspect_model_architecture(model_config)
-    try:
-        validate_pruning_architecture(architecture_report, len(records))
-    except PruneRefusal as exc:
-        raise SystemExit(str(exc)) from exc
-    checkpoint_vocab_size = model_vocabulary_size(architecture_report, len(records))
     config = settings_config(
         keep_script,
         syntax_list,
@@ -326,56 +381,84 @@ def prune_command(
         command="prune",
         model=model,
         config=config,
+        suffix=save_suffix,
     )
     save = str(save_dir)
-    result = run_token_pipeline(
-        model=model,
-        config=config,
-        records=records,
-        workers=workers,
-        progress=True,
-        recreate_list=recreate_list,
-    )
-    print_cache_status(result.cache_dir, result.cache_reused)
-    scores = result.scores
-    retained_ids = result.retained_ids
-    write_create_artifacts(
-        create,
-        save_dir,
-        config=config,
-        scores=scores,
-        cache_dir=result.cache_dir,
-        html_dir=result.cache_dir,
-        wordfreq_min_zipf=wordfreq_min_zipf,
-        wordfreq_top_pct=wordfreq_top_pct,
-        html_launcher=start_html_server,
-    )
+    related_dir = Path(related_path).expanduser().resolve() if related_path else None
+    if related_model:
+        related_dir = resolve_related_model_dir(related_model)
 
     try:
+        required_ids = codebook_config_ids(model_config)
+        if related_dir is not None:
+            if not architecture_report.vocabulary_surfaces:
+                raise PruneRefusal("Related-map pruning requires a declared model vocabulary size.")
+            checkpoint_vocab_size = architecture_report.vocabulary_surfaces[0][1]
+            validate_pruning_architecture(architecture_report, checkpoint_vocab_size)
+            retained_ids = load_related_token_ids(related_dir, checkpoint_vocab_size)
+            tokenizer = None
+            original_vocab_size = checkpoint_vocab_size
+        else:
+            tokenizer = load_tokenizer(model, trust_remote_code=trust_remote_code)
+            records = tokenizer_records(tokenizer)
+            validate_pruning_architecture(architecture_report, len(records))
+            checkpoint_vocab_size = model_vocabulary_size(architecture_report, len(records))
+            result = run_token_pipeline(
+                model=model,
+                config=config,
+                records=records,
+                workers=workers,
+                progress=True,
+                recreate_list=recreate_list,
+            )
+            print_cache_status(result.cache_dir, result.cache_reused)
+            scores = result.scores
+            retained_ids = sorted(set(result.retained_ids) | required_ids)
+            original_vocab_size = len(records)
+            write_create_artifacts(
+                create,
+                save_dir,
+                config=config,
+                scores=scores,
+                cache_dir=result.cache_dir,
+                html_dir=result.cache_dir,
+                wordfreq_min_zipf=wordfreq_min_zipf,
+                wordfreq_top_pct=wordfreq_top_pct,
+                html_launcher=start_html_server,
+            )
+
+        missing_config_ids = required_ids - set(retained_ids)
+        if missing_config_ids:
+            raise PruneRefusal(
+                "Related token map omits required config token ID(s): "
+                + ", ".join(map(str, sorted(missing_config_ids)))
+            )
+
         try:
             compact_token_maps(retained_ids)
         except ValueError as exc:
             raise PruneRefusal(str(exc)) from exc
         if not retained_ids:
             raise PruneRefusal("Refusing to prune to an empty vocabulary.")
-        if min(retained_ids) < 0 or max(retained_ids) >= len(records):
-            raise PruneRefusal("Retained token IDs must be within the tokenizer vocabulary.")
+        if min(retained_ids) < 0 or max(retained_ids) >= original_vocab_size:
+            raise PruneRefusal("Retained token IDs must be within the source vocabulary.")
         retained_count = len(retained_ids)
-        pruned_count = len(records) - retained_count
+        pruned_count = original_vocab_size - retained_count
         print_pruning_preview(
             model=model,
             save=save,
-            original_count=len(records),
+            original_count=original_vocab_size,
             retained_count=retained_count,
             pruned_count=pruned_count,
         )
-        print_prune_decisions(
-            model=model,
-            records=records,
-            scores=scores,
-            show=show,
-            example_counts=example_counts,
-        )
+        if related_dir is None:
+            print_prune_decisions(
+                model=model,
+                records=records,
+                scores=scores,
+                show=show,
+                example_counts=example_counts,
+            )
         if not yes and not _is_model_downloaded(model):
             print("Model checkpoint is not cached locally; pruning may download it.")
         if not yes and not confirm_pruning():
@@ -385,7 +468,7 @@ def prune_command(
             model_source=model,
             output_dir=save,
             retained_token_ids=retained_ids,
-            original_vocab_size=len(records),
+            original_vocab_size=original_vocab_size,
         )
         if result is None:
             result = prune_safetensors_checkpoint(
@@ -394,11 +477,13 @@ def prune_command(
                 config=model_config,
                 output_dir=save,
                 retained_token_ids=retained_ids,
-                original_vocab_size=len(records),
+                original_vocab_size=original_vocab_size,
                 model_vocab_size=checkpoint_vocab_size,
                 trust_remote_code=trust_remote_code,
             )
         if result is None:
+            if tokenizer is None:
+                raise PruneRefusal("Tokenizer-less related models require a safetensors checkpoint.")
             ensure_pruning_runtime(architecture_report, assume_yes=yes)
             loaded_model = load_causal_lm(
                 model,
@@ -411,7 +496,7 @@ def prune_command(
                 tokenizer=tokenizer,
                 output_dir=save,
                 retained_token_ids=retained_ids,
-                original_vocab_size=len(records),
+                original_vocab_size=original_vocab_size,
                 model_vocab_size=checkpoint_vocab_size,
                 source_dir=source_dir if source_dir is not None and source_dir.is_dir() else None,
             )
@@ -421,7 +506,7 @@ def prune_command(
     print("VocabPruner Prune")
     print(f"Model: {model}")
     print(f"Save: {result.output_dir}")
-    print(f"Original vocab size: {len(records)}")
+    print(f"Original vocab size: {original_vocab_size}")
     print(f"Retained vocab size: {result.retained_count}")
     print(f"Pruned vocab size: {result.pruned_count}")
     if result.original_checkpoint_bytes is not None and result.pruned_checkpoint_bytes is not None:
@@ -453,15 +538,15 @@ def main(argv: list[str] | None = None) -> None:
     os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.hf_cache:
-        os.environ["HF_HUB_CACHE"] = str(Path(args.hf_cache).expanduser().resolve())
     if args.command in {"analyze", "prune"}:
         for name in args.selection_group:
             group = selection_groups()[name]
             args.keep_script.extend(group.keep_scripts)
             args.syntax_list.extend(group.syntax_lists)
             args.symbol_list.extend(group.symbol_lists)
-    if args.command == "inspect":
+    if args.command == "init":
+        print(f"Environment file: {load_user_env(create=True)}")
+    elif args.command == "inspect":
         inspect_command(args.model, trust_remote_code=args.trust_remote_code)
     elif args.command == "pull":
         pull_command(args.model, trust_remote_code=args.trust_remote_code)
@@ -499,6 +584,9 @@ def main(argv: list[str] | None = None) -> None:
             recreate_list=args.recreate_list,
             yes=args.yes,
             trust_remote_code=args.trust_remote_code,
+            related_path=args.related_path,
+            related_model=args.related_model,
+            save_suffix=args.save_suffix,
         )
 
 
