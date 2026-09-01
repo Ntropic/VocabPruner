@@ -61,10 +61,10 @@ vocabpruner prune \
   --save-suffix latin-all
 ```
 
-`--related-model` resolves the exact directory name under
-`VOCABPRUNER_SAVE_DIR`, or the current directory when it is unset. It also
-accepts an existing path. Use `--related-path` to require explicit path
-resolution.
+| Metric | Before | After | Difference |
+| --- | ---: | ---: | ---: |
+| Vocabulary | 248,320 | 145,545 | −102,775 (−41.39%) |
+| Checkpoint size | 2.10 GiB | 2.00 GiB | −0.10 GiB (−4.68%) |
 
 ## CLI
 
