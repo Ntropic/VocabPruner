@@ -1,23 +1,18 @@
 # VocabPruner
-
-Shrink language models tokenizers to the vocabulary your workload actually needs.
-VocabPruner helps you reduce the dictionary of your LLM's, to produce
-smaller Hugging Face or GGUF checkpoints. Keep only the languages, writing systems,
-symbols, and project-specific terms that matter to your workflows, while preserving
-required encoding tokens. Smaller weights can leave more VRAM for KV cache;
-quality and runtime effects should be measured on your workload.
-VocabPruner supports standard language models, MTP models, and DFlash 1/2 and
-DSpark 1/2 speculative decoding models.
+I don't speak chinese, so why waste precious memory on it in my LLM's. 
+Prune LLM vocabularies and model weights by script, language, and symbols. 
+ - Supports Hugging Face and GGUF checkpoints
+ - MTP, DFlash, and DSpark models
+ - Preserves byte encoding
+ - Supports BPE, Unigram, WordPiece, and WordLevel tokenizers
+ - Supports wordfrequency based pruning
 
 ## Install
 
 ```bash
-pip install .
+git clone https://github.com/Ntropic/VocabPruner.git
+pip install ./VocabPruner
 ```
-
-For development, use `pip install -e .` so edits under `src/vocabpruner/`
-are available to the installed CLI. See the [Python API reference](docs/api.md)
-for the package exports.
 
 ## Example
 In the following example, `latin-all` keeps Latin text and a practical group
@@ -39,7 +34,7 @@ fix. Regenerate both target and draft checkpoints for current measurements.
 | NVFP4 KV-cache capacity | — | — | ≈91,200 more tokens |
 
 ### Example Output
-
+While all of the remaining tokens retain their relative probability scores, removed tokens can lead to unusual results.  
 > **Pruned (`latin-all`)**
 >
 > **User:** Say "Hello World" in Japanese.
@@ -52,10 +47,6 @@ fix. Regenerate both target and draft checkpoints for current measurements.
 >
 > **Assistant:** In Japanese, "Hello World" is "こんにちは世界" (Konnichiwa, Zaawoorudo).
 
-This historical output does not establish the behavior of newly pruned models.
-Removing dedicated Japanese tokens does not remove the ability to encode Japanese
-when byte encoding is preserved; it can require more tokens instead. Generated
-answers and their quality can change even for retained scripts.
 
 ### Pruning Speculative Decoding Models
 The pruned target directory contains the finalized old-to-new token-ID map.
@@ -320,66 +311,18 @@ printable byte symbols. BPE merge dependencies are retained recursively before
 the token-ID map and model rows are rewritten. Old analysis caches are rebuilt
 automatically when the cache schema changes.
 
-### Tokenizer Support and Validation
+### Tokenizer Validation
 
-Support is determined by the serialized tokenizer backend, **not the model family**.
+Hugging Face exports require a supported JSON-backed fast tokenizer.
+SentencePiece-derived BPE and Unigram are supported through `tokenizer.json`;
+native SentencePiece binary export is not supported.
 
-| Tokenizer type / encoding | Support | Requirements and limits |
-| --- | --- | --- |
-| BPE | Supported | Hugging Face `tokenizer.json`; retained merge dependencies and merge order preserved. |
-| Byte-level BPE | Supported | Complete 256-byte alphabet preserved when the backend declares ByteLevel preprocessing. |
-| BPE / Unigram with byte fallback | Supported | All 256 `<0xNN>` fallback tokens required and preserved. |
-| Unigram | Supported | JSON vocabulary, token scores, and unknown-token ID preserved/remapped. |
-| WordPiece | Supported | JSON backend; `vocab.txt` also rewritten when present. |
-| WordLevel / character vocabulary | Supported | Character vocabularies must use a supported backend, such as WordLevel. |
-| SentencePiece-derived fast tokenizer | Conditional | Must expose supported BPE or Unigram JSON; native SentencePiece binary export is not supported. |
-| GGUF tokenizer metadata | Limited validation | Stored vocabulary and metadata checked through our wrapper, not a native llama.cpp tokenizer. |
-| Custom / unknown serialization | Unsupported unless recognized | Must expose one of the supported JSON backend formats. |
+Every retained token is checked against the source for representation, decoding,
+and ID mapping, alongside tokenizer settings and BPE dependencies. Failures stop
+pruning; results are saved in `tokenizer_validation.json`. Use `use_fast=True`.
 
-Format support does not guarantee that every model architecture or quantization
-layout can be pruned. Tokenizers without byte encoding remain supported, but do
-not gain universal byte coverage through pruning.
-
-Hugging Face pruning supports JSON-backed BPE, Unigram, WordPiece, and WordLevel
-tokenizers, including character vocabularies implemented with WordLevel.
-Byte encoding is detected from tokenizer metadata, not the model-family name.
-Tokenizers without byte fallback are allowed; pruning does not add that capability.
-Custom implementations must expose one of these supported JSON backend formats.
-Unknown serialization formats are refused rather than rewritten speculatively.
-
-Every exported tokenizer is reloaded and checked against the source and the
-old-to-new ID map. The check covers **every retained token**: its stored text,
-individual decoding, special-token status, added-token attributes, and Unigram
-score where applicable. BPE merge dependencies and merge order, unknown-token
-IDs, normalization, preprocessing, decoding, and postprocessing are also checked.
-Failure stops pruning; success writes `tokenizer_validation.json`.
-
-These are tokenizer-file checks, not model inference or a proof that every input
-will tokenize identically. Removed tokens can change segmentation. Individual
-byte tokens may decode to a replacement character in both tokenizers; their
-complete byte alphabet is verified separately. No API server or GPU is required
-for the vocabulary check.
-
-Use the exported Hugging Face tokenizer with `use_fast=True`. WordPiece
-`vocab.txt` is remapped when present. Original SentencePiece binary sidecars are
-removed from the export because they would retain the old vocabulary; the
-validated `tokenizer.json` is the supported artifact.
-
-GGUF exports verify retained token strings, IDs, scores, token types, byte-token
-coverage, merges, and decoding through VocabPruner's GGUF wrapper, and write
-`<checkpoint>.tokenizer_validation.json`. This is not a native llama.cpp
-tokenization or inference test.
-
-Previously pruned checkpoints are not repaired automatically. Regenerate them
-from their original checkpoints, then regenerate related draft models using the
-new target token map.
-
-## Documentation
-
-Documentation sources live in [`docs/`](docs/index.md). See the
-[scoring reference](docs/scoring.md) for vocabulary selection rules.
-The GitHub Actions workflow builds documentation on pull requests and
-publishes from `main`; it does not release the package or upload models.
+GGUF checks use our tokenizer wrapper. These checks verify tokenizer integrity;
+they do not guarantee identical segmentation or model output.
 
 ## Environment
 

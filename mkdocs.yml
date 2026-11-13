@@ -1,9 +1,0 @@
-site_name: VocabPruner
-site_description: Vocabulary pruning with tokenizer preservation and validation.
-strict: true
-theme:
-  name: mkdocs
-nav:
-  - Overview: index.md
-  - Python API: api.md
-  - Scoring System: scoring.md

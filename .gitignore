@@ -18,6 +18,9 @@ htmlcov/
 .env
 /model_cards/
 /evaluation/
+/docs/
+/mkdocs.yml
+/.github/workflows/docs.yml
 *.safetensors
 *.gguf
 *.pt
