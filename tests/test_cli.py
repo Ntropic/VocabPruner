@@ -1,24 +1,26 @@
 import shutil
-from pathlib import Path
 
 import pytest
 
+import vocabpruner.analysis.cache as analysis_cache
+import vocabpruner.checkpoints.runtime as checkpoints_runtime
 import vocabpruner.cli as cli
-import vocabpruner.pipeline as pipeline
-import vocabpruner.pruning as pruning
+import vocabpruner.presentation.artifacts as presentation_artifacts
+import vocabpruner.presentation.console as presentation_console
+import vocabpruner.workflows as workflows
 
 
 @pytest.fixture(autouse=True)
 def allow_pruning_runtime(monkeypatch, tmp_path):
     lists_dir = tmp_path / "lists"
     decisions_dir = tmp_path / "decisions"
-    monkeypatch.setattr(pipeline, "LISTS_DIR", lists_dir)
-    monkeypatch.setattr(pipeline, "DECISIONS_DIR", decisions_dir)
-    monkeypatch.setattr(pruning, "missing_pruning_packages", lambda report: ())
-    monkeypatch.setattr(pruning, "validate_pruning_runtime", lambda report: None)
-    monkeypatch.setattr(cli, "prune_safetensors_checkpoint", lambda **kwargs: None)
+    monkeypatch.setattr(analysis_cache, "LISTS_DIR", lists_dir)
+    monkeypatch.setattr(presentation_artifacts, "DECISIONS_DIR", decisions_dir)
+    monkeypatch.setattr(checkpoints_runtime, "missing_pruning_packages", lambda report: ())
+    monkeypatch.setattr(checkpoints_runtime, "validate_pruning_runtime", lambda report: None)
+    monkeypatch.setattr(workflows, "prune_safetensors_checkpoint", lambda **kwargs: None)
     monkeypatch.setattr(
-        cli,
+        workflows,
         "start_html_server",
         lambda directory: ("http://127.0.0.1:8765/wordfreq_viewer.html", 12345),
     )
@@ -41,6 +43,12 @@ class TinyTokenizer:
     all_special_tokens = ["<s>"]
     special_tokens_map = {"bos_token": "<s>"}
 
+    @property
+    def backend_tokenizer(self):
+        from tokenizers import Tokenizer, models
+
+        return Tokenizer(models.WordLevel(self.get_vocab(), unk_token="<s>"))
+
     def get_vocab(self):
         return {"<s>": 0, "hello": 1, "Ж": 2, "{": 3, "": 4, "π": 5}
 
@@ -62,8 +70,8 @@ class TinyConfig:
 
 
 def test_inspect_reports_model_architecture(monkeypatch, capsys):
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
-    monkeypatch.setattr(cli, "load_model_config", lambda *args, **kwargs: TinyConfig())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_model_config", lambda *args, **kwargs: TinyConfig())
 
     cli.main(["inspect", "tiny"])
 
@@ -78,7 +86,7 @@ def test_inspect_reports_model_architecture(monkeypatch, capsys):
 
 def test_pull_downloads_checkpoint(monkeypatch, capsys, tmp_path):
     snapshot = tmp_path / "snapshot"
-    monkeypatch.setattr(cli, "resolve_checkpoint_source", lambda *args, **kwargs: snapshot)
+    monkeypatch.setattr(workflows, "resolve_checkpoint_source", lambda *args, **kwargs: snapshot)
 
     cli.main(["pull", "tiny"])
 
@@ -99,7 +107,7 @@ def test_selection_group_adds_lists_but_not_dictionaries(monkeypatch):
 
 def test_analyze_output_print_accepts_space_separated_lists(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(
         [
@@ -127,7 +135,7 @@ def test_analyze_output_print_accepts_space_separated_lists(monkeypatch, capsys,
 
 def test_analyze_classifies_all(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(["analyze", "tiny", "--languages", "en", "--wordfreq-min-zipf", "4", "--show", "stats"])
 
@@ -136,7 +144,7 @@ def test_analyze_classifies_all(monkeypatch, capsys, tmp_path):
 
 
 def test_analyze_rejects_sample_size_argument(monkeypatch):
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     try:
         cli.main(["analyze", "tiny", "--sample-size", "0", "--show", "stats"])
@@ -148,7 +156,7 @@ def test_analyze_rejects_sample_size_argument(monkeypatch):
 
 def test_analyze_show_stats_prints_stats_only(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(["analyze", "tiny", "--wordfreq-min-zipf", "4", "--show", "stats"])
 
@@ -161,7 +169,7 @@ def test_analyze_show_stats_prints_stats_only(monkeypatch, capsys, tmp_path):
 
 def test_analyze_show_can_be_repeated(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(
         [
@@ -183,7 +191,7 @@ def test_analyze_show_can_be_repeated(monkeypatch, capsys, tmp_path):
 
 def test_analyze_show_all_prints_rows(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(["analyze", "tiny", "--wordfreq-min-zipf", "4", "--show", "all"])
 
@@ -194,7 +202,7 @@ def test_analyze_show_all_prints_rows(monkeypatch, capsys, tmp_path):
 
 def test_analyze_create_list_creates_cache_without_decisions(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(["analyze", "tiny", "--seed", "1", "--create", "list"])
 
@@ -202,22 +210,22 @@ def test_analyze_create_list_creates_cache_without_decisions(monkeypatch, capsys
     assert "VocabPruner Sample Report" not in captured.out
     assert '"token"' not in captured.out
     assert "List:" in captured.err
-    list_dirs = [path for path in pipeline.LISTS_DIR.iterdir() if path.is_dir()]
+    list_dirs = [path for path in analysis_cache.LISTS_DIR.iterdir() if path.is_dir()]
     assert len(list_dirs) == 1
     assert (list_dirs[0] / "settings.json").is_file()
     assert (list_dirs[0] / "token_facts.json").is_file()
     assert (list_dirs[0] / "wordfreq_facts.json").is_file()
-    assert not list(pipeline.DECISIONS_DIR.rglob("token_decisions.jsonl"))
+    assert not list(presentation_artifacts.DECISIONS_DIR.rglob("token_decisions.jsonl"))
 
 
 def test_analyze_create_list_reuses_existing_cache_without_threshold_decisions(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(["analyze", "tiny", "--wordfreq-min-zipf", "8", "--create", "list"])
     first = capsys.readouterr()
     monkeypatch.setattr(
-        cli,
+        workflows,
         "load_tokenizer",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("tokenizer should not load")),
     )
@@ -228,17 +236,17 @@ def test_analyze_create_list_reuses_existing_cache_without_threshold_decisions(m
     assert "List reused" in second.err
     assert "Retained:" not in first.out
     assert "Retained:" not in second.out
-    assert not list(pipeline.DECISIONS_DIR.rglob("token_decisions.jsonl"))
+    assert not list(presentation_artifacts.DECISIONS_DIR.rglob("token_decisions.jsonl"))
 
 
 def test_analyze_create_html_reuses_cache_without_loading_tokenizer(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(["analyze", "tiny", "--create", "list"])
     capsys.readouterr()
     monkeypatch.setattr(
-        cli,
+        workflows,
         "load_tokenizer",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("tokenizer should not load")),
     )
@@ -253,19 +261,19 @@ def test_analyze_create_html_reuses_cache_without_loading_tokenizer(monkeypatch,
 
 def test_analyze_without_threshold_skips_language_filter(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(["analyze", "tiny", "--show", "stats", "--create", "decisions"])
 
     output = capsys.readouterr().out
     assert "Retained: 3" in output
     assert "Pruned: 3" in output
-    assert list(pipeline.DECISIONS_DIR.glob("*no-wordfreq*"))
+    assert list(presentation_artifacts.DECISIONS_DIR.glob("*no-wordfreq*"))
 
 
 def test_analyze_create_decisions_writes_jsonl_without_printing_it(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(["analyze", "tiny", "--seed", "1", "--wordfreq-min-zipf", "4", "--show", "stats", "--create", "decisions"])
 
@@ -273,14 +281,14 @@ def test_analyze_create_decisions_writes_jsonl_without_printing_it(monkeypatch, 
     assert "VocabPruner Sample Report" in captured.out
     assert '"token"' not in captured.out
     assert "Decisions:" in captured.err
-    saved_decisions = list(pipeline.DECISIONS_DIR.rglob("token_decisions.jsonl"))
+    saved_decisions = list(presentation_artifacts.DECISIONS_DIR.rglob("token_decisions.jsonl"))
     assert saved_decisions
     assert len(saved_decisions[0].read_text(encoding="utf-8").strip().splitlines()) == 6
 
 
 def test_analyze_accepts_workers(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(["analyze", "tiny", "--workers", "1", "--wordfreq-min-zipf", "4", "--show", "stats"])
 
@@ -289,7 +297,7 @@ def test_analyze_accepts_workers(monkeypatch, capsys, tmp_path):
 
 
 def test_analyze_recreate_list_bypasses_cache(monkeypatch, capsys):
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
     args = ["analyze", "tiny", "--show", "stats"]
 
     cli.main(args)
@@ -299,7 +307,7 @@ def test_analyze_recreate_list_bypasses_cache(monkeypatch, capsys):
 
 
 def test_normalize_show_examples_default_counts():
-    show, counts = cli.normalize_show_args([["examples"]])
+    show, counts = presentation_console.normalize_show_args([["examples"]])
 
     assert show == ["examples"]
     assert counts.retained == 5
@@ -307,7 +315,7 @@ def test_normalize_show_examples_default_counts():
 
 
 def test_normalize_show_examples_inline_count():
-    show, counts = cli.normalize_show_args([["examples:3"]])
+    show, counts = presentation_console.normalize_show_args([["examples:3"]])
 
     assert show == ["examples"]
     assert counts.retained == 3
@@ -315,7 +323,7 @@ def test_normalize_show_examples_inline_count():
 
 
 def test_normalize_show_examples_category_counts():
-    show, counts = cli.normalize_show_args([["stats", "examples:retained=2,pruned=4"]])
+    show, counts = presentation_console.normalize_show_args([["stats", "examples:retained=2,pruned=4"]])
 
     assert show == ["stats", "examples"]
     assert counts.retained == 2
@@ -330,7 +338,7 @@ def test_normalize_show_rejects_invalid_examples_specs():
     }
     for value, message in cases.items():
         try:
-            cli.normalize_show_args([[value]])
+            presentation_console.normalize_show_args([[value]])
         except SystemExit as exc:
             assert str(exc) == message
         else:
@@ -339,7 +347,7 @@ def test_normalize_show_rejects_invalid_examples_specs():
 
 def test_analyze_show_examples_prints_decision_buckets(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(["analyze", "tiny", "--wordfreq-min-zipf", "4", "--show", "examples:2"])
 
@@ -352,7 +360,7 @@ def test_analyze_show_examples_prints_decision_buckets(monkeypatch, capsys, tmp_
 
 def test_analyze_show_stats_examples_prints_both(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(["analyze", "tiny", "--wordfreq-min-zipf", "4", "--show", "stats", "examples:2"])
 
@@ -376,7 +384,7 @@ def test_analyze_help_does_not_list_example_count(capsys):
 
 
 def test_analyze_rejects_save_argument(monkeypatch):
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     try:
         cli.main(["analyze", "tiny", "--wordfreq-min-zipf", "4", "--save", "reports"])
@@ -388,7 +396,7 @@ def test_analyze_rejects_save_argument(monkeypatch):
 
 def test_analyze_create_decisions_uses_generated_settings_path(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(
         [
@@ -407,7 +415,7 @@ def test_analyze_create_decisions_uses_generated_settings_path(monkeypatch, caps
 
     captured = capsys.readouterr()
     expected = (
-            pipeline.DECISIONS_DIR
+            presentation_artifacts.DECISIONS_DIR
             / "tiny__scripts-common-inherited-latin__syntax-none__symbols-none__langs-en__zipf-4__seed-1"
         / "token_decisions.jsonl"
     )
@@ -418,7 +426,7 @@ def test_analyze_create_decisions_uses_generated_settings_path(monkeypatch, caps
 
 
 def test_analyze_show_json_is_rejected(monkeypatch):
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     try:
         cli.main(["analyze", "tiny", "--show", "json"])
@@ -429,7 +437,7 @@ def test_analyze_show_json_is_rejected(monkeypatch):
 
 
 def test_analyze_show_list_is_rejected(monkeypatch):
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     try:
         cli.main(["analyze", "tiny", "--show", "list"])
@@ -441,7 +449,7 @@ def test_analyze_show_list_is_rejected(monkeypatch):
 
 def test_analyze_create_html_writes_viewer_assets(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(["analyze", "tiny", "--create", "html"])
 
@@ -450,7 +458,7 @@ def test_analyze_create_html_writes_viewer_assets(monkeypatch, capsys, tmp_path)
     assert "Open: http://127.0.0.1:8765/wordfreq_viewer.html" in captured.out
     assert "Server PID: 12345" in captured.err
     assert "VocabPruner Sample Report" not in captured.out
-    html_paths = list(pipeline.LISTS_DIR.rglob("wordfreq_viewer.html"))
+    html_paths = list(analysis_cache.LISTS_DIR.rglob("wordfreq_viewer.html"))
     assert html_paths
     list_dir = html_paths[0].parent
     assert (list_dir / "settings.json").is_file()
@@ -470,7 +478,7 @@ def test_analyze_create_html_writes_viewer_assets(monkeypatch, capsys, tmp_path)
 
 
 def test_analyze_show_html_is_rejected(monkeypatch):
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     try:
         cli.main(["analyze", "tiny", "--show", "html"])
@@ -482,7 +490,7 @@ def test_analyze_show_html_is_rejected(monkeypatch):
 
 def test_analyze_threshold_change_reuses_same_cache(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(["analyze", "tiny", "--wordfreq-min-zipf", "8", "--show", "stats"])
     first = capsys.readouterr()
@@ -491,7 +499,7 @@ def test_analyze_threshold_change_reuses_same_cache(monkeypatch, capsys, tmp_pat
 
     assert "List created" in first.err
     assert "List reused" in second.err
-    list_dirs = [path for path in pipeline.LISTS_DIR.iterdir() if path.is_dir()]
+    list_dirs = [path for path in analysis_cache.LISTS_DIR.iterdir() if path.is_dir()]
     assert len(list_dirs) == 1
     assert "zipf-8" not in list_dirs[0].name
     assert "zipf-3" not in list_dirs[0].name
@@ -499,26 +507,26 @@ def test_analyze_threshold_change_reuses_same_cache(monkeypatch, capsys, tmp_pat
 
 def test_analyze_without_save_writes_cache_only(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(["analyze", "tiny", "--wordfreq-min-zipf", "4", "--show", "stats"])
 
     capsys.readouterr()
-    assert pipeline.LISTS_DIR.exists()
-    assert any((path / "settings.json").is_file() for path in pipeline.LISTS_DIR.iterdir() if path.is_dir())
+    assert analysis_cache.LISTS_DIR.exists()
+    assert any((path / "settings.json").is_file() for path in analysis_cache.LISTS_DIR.iterdir() if path.is_dir())
     assert not list(tmp_path.rglob("retained_token_ids.txt"))
     assert not list(tmp_path.rglob("pruned_token_ids.txt"))
 
 
 def test_create_list_uses_default_cache_path(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     cli.main(["analyze", "tiny/model", "--languages", "en", "--create", "list"])
 
     captured = capsys.readouterr()
     expected = (
-            pipeline.LISTS_DIR
+            analysis_cache.LISTS_DIR
             / "tiny-model__scripts-common-inherited-latin__syntax-none__symbols-none__langs-en"
     )
     assert '"token"' not in captured.out
@@ -526,7 +534,7 @@ def test_create_list_uses_default_cache_path(monkeypatch, capsys, tmp_path):
     assert (expected / "settings.json").exists()
     assert (expected / "token_facts.json").exists()
     assert (expected / "wordfreq_facts.json").exists()
-    assert not list(pipeline.DECISIONS_DIR.rglob("token_decisions.jsonl"))
+    assert not list(presentation_artifacts.DECISIONS_DIR.rglob("token_decisions.jsonl"))
 
 
 def test_prune_refuses_separate_smaller_vocabulary_before_loading_weights(monkeypatch, tmp_path):
@@ -540,13 +548,13 @@ def test_prune_refuses_separate_smaller_vocabulary_before_loading_weights(monkey
                 "talker_config": {"vocab_size": 4},
             }
 
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
-    monkeypatch.setattr(cli, "load_model_config", lambda *args, **kwargs: MultiVocabConfig())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_model_config", lambda *args, **kwargs: MultiVocabConfig())
 
     def fail_load(*args, **kwargs):
         raise AssertionError("weights should not be loaded for refused architectures")
 
-    monkeypatch.setattr(cli, "load_causal_lm", fail_load)
+    monkeypatch.setattr(workflows, "load_causal_lm", fail_load)
 
     try:
         cli.main(
@@ -566,14 +574,14 @@ def test_prune_refuses_separate_smaller_vocabulary_before_loading_weights(monkey
 
 
 def test_prune_confirmation_decline_avoids_loading_weights(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
-    monkeypatch.setattr(cli, "load_model_config", lambda *args, **kwargs: TinyConfig())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_model_config", lambda *args, **kwargs: TinyConfig())
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
 
     def fail_load(*args, **kwargs):
         raise AssertionError("weights should not be loaded after declining")
 
-    monkeypatch.setattr(cli, "load_causal_lm", fail_load)
+    monkeypatch.setattr(workflows, "load_causal_lm", fail_load)
 
     cli.main(
         [
@@ -594,11 +602,11 @@ def test_prune_confirmation_decline_avoids_loading_weights(monkeypatch, capsys, 
 
 def test_prune_without_save_path_uses_default_artifact_path(monkeypatch, capsys, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
-    monkeypatch.setattr(cli, "load_model_config", lambda *args, **kwargs: TinyConfig())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_model_config", lambda *args, **kwargs: TinyConfig())
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
     monkeypatch.setattr(
-        cli,
+        workflows,
         "load_causal_lm",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("weights should not load")),
     )
@@ -621,8 +629,8 @@ def test_prune_without_save_path_uses_default_artifact_path(monkeypatch, capsys,
 def test_prune_uses_save_directory_environment_variable(monkeypatch, capsys, tmp_path):
     save_root = tmp_path / "published"
     monkeypatch.setenv("VOCABPRUNER_SAVE_DIR", str(save_root))
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
-    monkeypatch.setattr(cli, "load_model_config", lambda *args, **kwargs: TinyConfig())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_model_config", lambda *args, **kwargs: TinyConfig())
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
 
     cli.main(["prune", "org/TinyModel", "--wordfreq-min-zipf", "4"])
@@ -631,14 +639,14 @@ def test_prune_uses_save_directory_environment_variable(monkeypatch, capsys, tmp
 
 
 def test_prune_defaults_to_summary_and_can_show_examples(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
-    monkeypatch.setattr(cli, "load_model_config", lambda *args, **kwargs: TinyConfig())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_model_config", lambda *args, **kwargs: TinyConfig())
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
 
     def fail_load(*args, **kwargs):
         raise AssertionError("weights should not be loaded after declining")
 
-    monkeypatch.setattr(cli, "load_causal_lm", fail_load)
+    monkeypatch.setattr(workflows, "load_causal_lm", fail_load)
 
     cli.main(
         [
@@ -663,11 +671,11 @@ def test_prune_defaults_to_summary_and_can_show_examples(monkeypatch, capsys, tm
 
 
 def test_prune_default_show_is_stats(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
-    monkeypatch.setattr(cli, "load_model_config", lambda *args, **kwargs: TinyConfig())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_model_config", lambda *args, **kwargs: TinyConfig())
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
     monkeypatch.setattr(
-        cli,
+        workflows,
         "load_causal_lm",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("weights should not load")),
     )
@@ -689,16 +697,16 @@ def test_prune_default_show_is_stats(monkeypatch, capsys, tmp_path):
 
 
 def test_prune_yes_skips_confirmation(monkeypatch, capsys, tmp_path):
-    from vocabpruner.pruning import PruneResult
+    from vocabpruner.models import PruneResult
 
     output_dir = tmp_path / "out"
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
-    monkeypatch.setattr(cli, "load_model_config", lambda *args, **kwargs: TinyConfig())
-    monkeypatch.setattr(cli, "load_causal_lm", lambda *args, **kwargs: object())
-    monkeypatch.setattr(cli, "write_checkpoint_manifest", lambda *args, **kwargs: None)
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_model_config", lambda *args, **kwargs: TinyConfig())
+    monkeypatch.setattr(workflows, "load_causal_lm", lambda *args, **kwargs: object())
+    monkeypatch.setattr(workflows, "write_checkpoint_manifest", lambda *args, **kwargs: None)
     monkeypatch.setattr("builtins.input", lambda prompt: (_ for _ in ()).throw(AssertionError("input should not run")))
     monkeypatch.setattr(
-        cli,
+        workflows,
         "prune_model_and_tokenizer",
         lambda **kwargs: PruneResult(
             output_dir,
@@ -730,17 +738,17 @@ def test_prune_yes_skips_confirmation(monkeypatch, capsys, tmp_path):
 
 
 def test_prune_uses_streaming_backend_without_loading_full_model(monkeypatch, capsys, tmp_path):
-    from vocabpruner.pruning import PruneResult
+    from vocabpruner.models import PruneResult
 
     output_dir = tmp_path / "streamed"
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
-    monkeypatch.setattr(cli, "load_model_config", lambda *args, **kwargs: TinyConfig())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_model_config", lambda *args, **kwargs: TinyConfig())
     monkeypatch.setattr(
-        cli,
+        workflows,
         "load_causal_lm",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("full model should not load")),
     )
-    monkeypatch.setattr(cli, "write_checkpoint_manifest", lambda *args, **kwargs: None)
+    monkeypatch.setattr(workflows, "write_checkpoint_manifest", lambda *args, **kwargs: None)
 
     def fake_stream(**kwargs):
         assert kwargs["output_dir"] == str(output_dir)
@@ -754,7 +762,7 @@ def test_prune_uses_streaming_backend_without_loading_full_model(monkeypatch, ca
             pruned_checkpoint_bytes=1024 ** 3,
         )
 
-    monkeypatch.setattr(cli, "prune_safetensors_checkpoint", fake_stream)
+    monkeypatch.setattr(workflows, "prune_safetensors_checkpoint", fake_stream)
 
     cli.main(
         [
@@ -777,58 +785,58 @@ def test_prune_uses_streaming_backend_without_loading_full_model(monkeypatch, ca
 def test_confirm_pruning_accepts_only_explicit_yes(monkeypatch):
     for answer in ("y", "Y", "yes", " YES "):
         monkeypatch.setattr("builtins.input", lambda prompt, answer=answer: answer)
-        assert cli.confirm_pruning() is True
+        assert presentation_console.confirm_pruning() is True
     for answer in ("", "n", "no", "maybe"):
         monkeypatch.setattr("builtins.input", lambda prompt, answer=answer: answer)
-        assert cli.confirm_pruning() is False
+        assert presentation_console.confirm_pruning() is False
 
 
 def test_ensure_pruning_runtime_offers_and_installs_missing_packages(monkeypatch, capsys):
     calls = []
     checks = iter([("torch", "nvidia-modelopt"), ()])
-    monkeypatch.setattr(pruning, "missing_pruning_packages", lambda report: next(checks))
-    monkeypatch.setattr(pruning, "validate_pruning_runtime", lambda report: None)
+    monkeypatch.setattr(checkpoints_runtime, "missing_pruning_packages", lambda report: next(checks))
+    monkeypatch.setattr(checkpoints_runtime, "validate_pruning_runtime", lambda report: None)
     monkeypatch.setattr("builtins.input", lambda prompt: "y")
-    monkeypatch.setattr(pruning.subprocess, "run", lambda command, check: calls.append((command, check)))
+    monkeypatch.setattr(checkpoints_runtime.subprocess, "run", lambda command, check: calls.append((command, check)))
 
-    pruning.ensure_pruning_runtime(object())
+    checkpoints_runtime.ensure_pruning_runtime(object())
 
     output = capsys.readouterr().out
     assert "Missing packages" in output
     assert "python" in output.lower()
-    assert calls == [([pruning.sys.executable, "-m", "pip", "install", "torch", "nvidia-modelopt"], True)]
+    assert calls == [([checkpoints_runtime.sys.executable, "-m", "pip", "install", "torch", "nvidia-modelopt"], True)]
 
 
 def test_ensure_pruning_runtime_decline_does_not_install(monkeypatch):
-    monkeypatch.setattr(pruning, "missing_pruning_packages", lambda report: ("torch",))
+    monkeypatch.setattr(checkpoints_runtime, "missing_pruning_packages", lambda report: ("torch",))
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
     monkeypatch.setattr(
-        pruning.subprocess,
+        checkpoints_runtime.subprocess,
         "run",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("pip should not run")),
     )
 
     with pytest.raises(SystemExit, match="were not installed"):
-        pruning.ensure_pruning_runtime(object())
+        checkpoints_runtime.ensure_pruning_runtime(object())
 
 
 def test_ensure_pruning_runtime_yes_skips_install_prompt(monkeypatch):
     calls = []
-    monkeypatch.setattr(pruning, "missing_pruning_packages", lambda report: ("compressed-tensors",))
-    monkeypatch.setattr(pruning, "validate_pruning_runtime", lambda report: None)
+    monkeypatch.setattr(checkpoints_runtime, "missing_pruning_packages", lambda report: ("compressed-tensors",))
+    monkeypatch.setattr(checkpoints_runtime, "validate_pruning_runtime", lambda report: None)
     monkeypatch.setattr(
         "builtins.input",
         lambda prompt: (_ for _ in ()).throw(AssertionError("input should not run")),
     )
-    monkeypatch.setattr(pruning.subprocess, "run", lambda command, check: calls.append(command))
+    monkeypatch.setattr(checkpoints_runtime.subprocess, "run", lambda command, check: calls.append(command))
 
-    pruning.ensure_pruning_runtime(object(), assume_yes=True)
+    checkpoints_runtime.ensure_pruning_runtime(object(), assume_yes=True)
 
-    assert calls == [[pruning.sys.executable, "-m", "pip", "install", "compressed-tensors"]]
+    assert calls == [[checkpoints_runtime.sys.executable, "-m", "pip", "install", "compressed-tensors"]]
 
 
 def test_analyze_rejects_output_argument(monkeypatch):
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     try:
         cli.main(["analyze", "tiny", "--output", "decisions.jsonl"])
@@ -839,7 +847,7 @@ def test_analyze_rejects_output_argument(monkeypatch):
 
 
 def test_rejects_both_wordfreq_threshold_modes(monkeypatch):
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     try:
         cli.main(
@@ -861,7 +869,7 @@ def test_rejects_both_wordfreq_threshold_modes(monkeypatch):
 
 
 def test_analyze_rejects_drop_script_argument(monkeypatch):
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     try:
         cli.main(["analyze", "tiny", "--drop-script", "Han"])
@@ -872,7 +880,7 @@ def test_analyze_rejects_drop_script_argument(monkeypatch):
 
 
 def test_analyze_rejects_unknown_show_value(monkeypatch):
-    monkeypatch.setattr(cli, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
 
     try:
         cli.main(["analyze", "tiny", "--show", "nope"])

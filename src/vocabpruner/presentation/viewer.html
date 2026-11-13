@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VocabPruner Wordfreq Viewer</title>
+  <style>
+    body { margin: 0; font-family: system-ui, sans-serif; background: #101418; color: #f4f7fb; }
+    header { display: flex; gap: 16px; align-items: center; padding: 14px 18px; border-bottom: 1px solid #2b333d; flex-wrap: wrap; }
+    h1 { font-size: 18px; margin: 0; font-weight: 650; }
+    select { background: #19212a; color: #f4f7fb; border: 1px solid #536171; border-radius: 6px; padding: 6px 9px; }
+    main { padding: 18px; }
+    canvas { width: 100%; height: 560px; background: #151b22; border: 1px solid #2b333d; border-radius: 6px; display: block; }
+    #stats { display: flex; gap: 18px; flex-wrap: wrap; color: #cbd5e1; font-size: 13px; }
+    #tip { min-height: 28px; padding-top: 12px; color: #cbd5e1; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Wordfreq Distribution</h1>
+    <select id="language"></select>
+    <div id="stats"></div>
+  </header>
+  <main>
+    <canvas id="chart"></canvas>
+    <div id="tip"></div>
+  </main>
+  <script>
+    let settings = {};
+    let tokenCols = {};
+    let cols = {};
+    let languages = [];
+    let plotted = [];
+    let hoverPoint = null;
+    const select = document.getElementById('language');
+    const metric = document.createElement('select');
+    metric.id = 'metric';
+    for (const [value, label] of [
+      ['zipf', 'Zipf score'],
+      ['rank_percent', 'Top percent'],
+      ['rank', 'Dictionary rank'],
+    ]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      metric.append(option);
+    }
+    select.after(metric);
+    const stats = document.getElementById('stats');
+    const canvas = document.getElementById('chart');
+    const tip = document.getElementById('tip');
+    const ctx = canvas.getContext('2d');
+
+    async function loadData() {
+      tip.textContent = 'Loading wordfreq list...';
+      const [settingsResponse, tokenResponse, wordfreqResponse] = await Promise.all([
+        fetch(__VOCABPRUNER_SETTINGS_URL__),
+        fetch(__VOCABPRUNER_TOKEN_URL__),
+        fetch(__VOCABPRUNER_WORDFREQ_URL__),
+      ]);
+      if (!settingsResponse.ok || !tokenResponse.ok || !wordfreqResponse.ok) {
+        throw new Error(`settings ${settingsResponse.status}, token ${tokenResponse.status}, wordfreq ${wordfreqResponse.status}`);
+      }
+      settings = await settingsResponse.json();
+      const tokenFacts = await tokenResponse.json();
+      const wordfreq = await wordfreqResponse.json();
+      tokenCols = tokenFacts.columns || {};
+      cols = wordfreq.columns || {};
+      languages = [...new Set(cols.language || [])].sort();
+      select.replaceChildren();
+      for (const language of languages) {
+        const option = document.createElement('option');
+        option.value = language;
+        option.textContent = language;
+        select.append(option);
+      }
+      if (languages.length) {
+        select.value = languages[0];
+      }
+      rebuildPlot();
+      updateStats();
+      draw();
+    }
+
+    function row(index) {
+      return {
+        tokenId: cols.token_id[index],
+        term: cols.term[index],
+        mode: cols.mode[index],
+        zipf: cols.zipf[index],
+        rank: cols.rank[index],
+        rankPercent: cols.rank_percent[index],
+      };
+    }
+
+    function tokenTextById() {
+      const lookup = new Map();
+      for (let index = 0; index < (tokenCols.token_id || []).length; index++) {
+        const text = tokenCols.decoded_text[index] || tokenCols.raw_token[index] || String(tokenCols.token_id[index]);
+        lookup.set(tokenCols.token_id[index], text);
+      }
+      return lookup;
+    }
+
+    function metricValue(item) {
+      if (metric.value === 'zipf') return item.zipf;
+      if (metric.value === 'rank_percent') return item.rankPercent;
+      return item.rank;
+    }
+
+    function metricIsHigherBetter() {
+      return metric.value === 'zipf';
+    }
+
+    function metricLabel() {
+      return metric.options[metric.selectedIndex].textContent;
+    }
+
+    function metricDisplay(value) {
+      if (value == null) return '-';
+      if (metric.value === 'zipf') return value.toFixed(3);
+      if (metric.value === 'rank_percent') return `${value.toFixed(4)}%`;
+      return value.toLocaleString();
+    }
+
+    function better(a, b) {
+      if (a == null) return false;
+      if (b == null) return true;
+      return metricIsHigherBetter() ? a > b : a < b;
+    }
+
+    function rebuildPlot() {
+      const language = select.value;
+      const tokens = tokenTextById();
+      const byToken = new Map();
+      for (let index = 0; index < (cols.language || []).length; index++) {
+        if (cols.language[index] !== language) continue;
+        const item = row(index);
+        const value = metricValue(item);
+        if (value == null) continue;
+        const tokenId = item.tokenId;
+        if (!byToken.has(tokenId)) {
+          byToken.set(tokenId, {
+            tokenId,
+            token: tokens.get(tokenId) || String(tokenId),
+            bestValue: null,
+            matches: new Map(),
+          });
+        }
+        const group = byToken.get(tokenId);
+        if (better(value, group.bestValue)) group.bestValue = value;
+        const key = `${item.term}\u0000${item.mode}`;
+        const previous = group.matches.get(key);
+        if (!previous || better(value, metricValue(previous))) group.matches.set(key, item);
+      }
+      plotted = [...byToken.values()]
+        .map(group => ({
+          ...group,
+          matches: [...group.matches.values()].sort((a, b) => {
+            const av = metricValue(a);
+            const bv = metricValue(b);
+            return metricIsHigherBetter() ? bv - av : av - bv;
+          }),
+        }))
+        .filter(group => group.bestValue != null)
+        .sort((a, b) => metricIsHigherBetter() ? b.bestValue - a.bestValue : a.bestValue - b.bestValue);
+    }
+
+    function dictionarySize(language) {
+      for (let index = 0; index < (cols.language || []).length; index++) {
+        if (cols.language[index] !== language) continue;
+        const rank = cols.rank[index];
+        const pct = cols.rank_percent[index];
+        if (rank != null && pct != null && pct > 0) {
+          return Math.round(rank * 100 / pct);
+        }
+      }
+      return null;
+    }
+
+    function updateStats() {
+      const language = select.value;
+      const totalRows = (cols.language || []).length;
+      const languageRows = (cols.language || []).filter(value => value === language).length;
+      const uniqueMatchedWords = new Set(plotted.flatMap(item => item.matches.map(match => match.term))).size;
+      const dictionaryRows = dictionarySize(language);
+      const settingsText = settings.settings
+        ? `scripts ${settings.settings.keep_scripts.join(', ')} | syntax ${settings.settings.syntax_lists.join(', ')} | symbols ${settings.settings.symbol_lists.join(', ')}`
+        : '';
+      stats.textContent = [
+        `${plotted.length.toLocaleString()} token words plotted`,
+        `${uniqueMatchedWords.toLocaleString()} matched words`,
+        `${languageRows.toLocaleString()} match rows for ${language || '-'}`,
+        `${totalRows.toLocaleString()} total match rows`,
+        dictionaryRows == null ? 'dictionary size unknown' : `${dictionaryRows.toLocaleString()} wordfreq dictionary entries`,
+        settingsText,
+      ].filter(Boolean).join(' | ');
+    }
+
+    function draw() {
+      const deviceRatio = window.devicePixelRatio || 1;
+      const rect = canvas.getBoundingClientRect();
+      canvas.width = Math.max(1, Math.floor(rect.width * deviceRatio));
+      canvas.height = Math.max(1, Math.floor(rect.height * deviceRatio));
+      ctx.setTransform(deviceRatio, 0, 0, deviceRatio, 0, 0);
+      const w = rect.width, h = rect.height, pad = 42;
+      ctx.clearRect(0, 0, w, h);
+      ctx.strokeStyle = '#334155';
+      ctx.strokeRect(pad, pad, w - pad * 1.5, h - pad * 1.7);
+      if (!plotted.length) {
+        tip.textContent = 'No matched token words for this language and metric.';
+        return;
+      }
+      const values = plotted.map(item => item.bestValue);
+      const minValue = Math.min(...values);
+      const maxValue = Math.max(...values);
+      const span = Math.max(1e-9, maxValue - minValue);
+      const sampleCount = Math.min(600, plotted.length);
+      const points = [];
+      ctx.beginPath();
+      for (let i = 0; i < sampleCount; i++) {
+        const source = Math.floor(i * (plotted.length - 1) / Math.max(1, sampleCount - 1));
+        const item = plotted[source];
+        const normalized = metricIsHigherBetter()
+          ? (item.bestValue - minValue) / span
+          : (maxValue - item.bestValue) / span;
+        const x = pad + (i / Math.max(1, sampleCount - 1)) * (w - pad * 1.5);
+        const y = h - pad * 0.7 - normalized * (h - pad * 1.7);
+        points.push({x, y, item});
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = '#5eead4';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      if (hoverPoint) {
+        const point = points.reduce((best, item) =>
+          Math.abs(item.x - hoverPoint.x) < Math.abs(best.x - hoverPoint.x) ? item : best
+        , points[0]);
+        ctx.strokeStyle = '#facc15';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(point.x, pad);
+        ctx.lineTo(point.x, h - pad * 0.7);
+        ctx.stroke();
+        ctx.fillStyle = '#facc15';
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      tip.textContent = `${select.value} | ${metricLabel()} | ${plotted.length.toLocaleString()} token words`;
+    }
+
+    canvas.addEventListener('mousemove', event => {
+      if (!plotted.length) return;
+      const rect = canvas.getBoundingClientRect();
+      const pad = 42;
+      const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left - pad) / (rect.width - pad * 1.5)));
+      const group = plotted[Math.min(plotted.length - 1, Math.max(0, Math.round(ratio * (plotted.length - 1))))];
+      const matches = group.matches.slice(0, 8).map(match =>
+        `${match.term} (${match.mode}, ${metricDisplay(metricValue(match))})`
+      ).join('; ');
+      hoverPoint = {x: event.clientX - rect.left};
+      draw();
+      tip.textContent = `token "${group.token}" | best ${metricLabel()} ${metricDisplay(group.bestValue)} | matches: ${matches}`;
+    });
+    canvas.addEventListener('mouseleave', () => {
+      hoverPoint = null;
+      draw();
+    });
+    select.addEventListener('change', () => {
+      hoverPoint = null;
+      rebuildPlot();
+      updateStats();
+      draw();
+    });
+    metric.addEventListener('change', () => {
+      hoverPoint = null;
+      rebuildPlot();
+      updateStats();
+      draw();
+    });
+    window.addEventListener('resize', draw);
+    loadData().catch(error => {
+      const fileHint = location.protocol === 'file:'
+        ? ' Browsers often block imported local JSON from file://; open this directory through a local HTTP server.'
+        : '';
+      tip.textContent = `Could not load list data: ${error}.${fileHint}`;
+    });
+  </script>
+</body>
+</html>

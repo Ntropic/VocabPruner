@@ -5,18 +5,16 @@ description = "Shrink language models around the vocabulary your workload needs.
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "datasets>=2.19",
     "gguf>=0.19",
     "numpy>=1.26",
-    "pydantic>=2.7",
-    "psutil>=5.9",
     "regex>=2024.5.15",
     "rich>=13.7",
     "safetensors>=0.4.3",
     "torch",
     "tqdm>=4.66",
     "transformers>=4.41",
-    "typer>=0.12",
+    "huggingface-hub>=0.23",
+    "tokenizers>=0.19",
     "wordfreq>=3.1",
 ]
 
@@ -29,7 +27,7 @@ compressed-tensors = [
 ]
 
 [project.scripts]
-vocabpruner = "vocabpruner.cli:app"
+vocabpruner = "vocabpruner.cli:main"
 
 [dependency-groups]
 dev = [
@@ -42,4 +40,10 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+addopts = ["--import-mode=importlib"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vocabpruner"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src/vocabpruner", "/tests", "/README.md", "/pyproject.toml", "/docs", "/mkdocs.yml"]
