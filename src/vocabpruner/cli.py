@@ -34,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("model", metavar="MODEL", help="Hugging Face model ID or local tokenizer path.")
     inspect_parser.add_argument("--trust-remote-code", action="store_true")
 
+    for command, help_text in (("info", "Show automatically selected vocabulary tensors."), ("info-full", "Show all checkpoint tensors.")):
+        info_parser = subparsers.add_parser(command, help=help_text)
+        info_parser.add_argument("model", metavar="MODEL", help="Hugging Face model ID or local model path.")
+        info_parser.add_argument("--trust-remote-code", action="store_true")
+
     pull_parser = subparsers.add_parser("pull", help="Download checkpoint shards into the Hugging Face cache.")
     pull_parser.add_argument("model", metavar="MODEL", help="Hugging Face model ID or local model path.")
     pull_parser.add_argument("--trust-remote-code", action="store_true")
@@ -61,6 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SUFFIX",
         help="Append SUFFIX to the generated default pruned-model name.",
     )
+    layers_group = prune_parser.add_mutually_exclusive_group()
+    layers_group.add_argument("--auto", action="store_true", help="Automatically select known vocabulary tensors (default).")
     prune_parser.add_argument(
         "--yes",
         action="store_true",
@@ -72,6 +79,10 @@ def build_parser() -> argparse.ArgumentParser:
     add_create_argument(prune_parser)
     prune_parser.add_argument("--recreate-list", action="store_true", help="Rebuild the cached token list.")
     prune_parser.add_argument("--trust-remote-code", action="store_true")
+    layers_group.add_argument(
+        "--layer", action="append", metavar="TENSOR[:AXIS]",
+        help="Prune this exact tensor; infer AXIS from vocabulary size unless specified. Repeat for each tensor.",
+    )
     related = prune_parser.add_mutually_exclusive_group()
     related.add_argument("--related-path", metavar="PATH", help="Reuse a token map from a pruned model directory.")
     related.add_argument(
@@ -183,6 +194,9 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Environment file: {load_user_env(create=True)}")
     elif args.command == "inspect":
         inspect_command(args.model, trust_remote_code=args.trust_remote_code)
+    elif args.command in {"info", "info-full"}:
+        from vocabpruner.workflows import info_command
+        info_command(args.model, full=args.command == "info-full", trust_remote_code=args.trust_remote_code)
     elif args.command == "pull":
         pull_command(args.model, trust_remote_code=args.trust_remote_code)
     elif args.command == "analyze":
@@ -222,6 +236,7 @@ def main(argv: list[str] | None = None) -> None:
             related_path=args.related_path,
             related_model=args.related_model,
             save_suffix=args.save_suffix,
+            layers=args.layer,
         )
 
 

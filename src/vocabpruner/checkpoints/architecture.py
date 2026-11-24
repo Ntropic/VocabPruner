@@ -38,12 +38,15 @@ def load_model_config(model: str, trust_remote_code: bool = False, **kwargs: Any
             "transformers is required to inspect model architecture. Install project dependencies first."
         ) from exc
 
-    config = AutoConfig.from_pretrained(
-        model,
-        trust_remote_code=trust_remote_code,
-        cache_dir=hf_models_dir(),
-        **kwargs,
-    )
+    try:
+        config = AutoConfig.from_pretrained(
+            model, trust_remote_code=trust_remote_code, cache_dir=hf_models_dir(), **kwargs,
+        )
+    except ValueError as exc:
+        if "does not recognize this architecture" not in str(exc):
+            raise
+        from transformers import PretrainedConfig
+        config, _ = PretrainedConfig.get_config_dict(model, cache_dir=hf_models_dir(), **kwargs)
     mark_analysis_download(model, trust_remote_code)
     return config
 
@@ -57,7 +60,7 @@ def inspect_model_architecture(config: Any) -> ModelArchitectureReport:
     vocabulary_surfaces = tuple(
         (path, int(value))
         for path, value in flattened
-        if _is_vocabulary_size(path, value)
+        if _is_vocabulary_size(path, value) and not path.endswith("unpadded_vocab_size")
     )
     encoders = tuple(sorted(_encoder_paths(data)))
     mtp_settings = tuple(
@@ -254,13 +257,16 @@ def is_checkpoint_vocab_tensor(
     if original_vocab_size is not None and (not shape or int(shape[0]) != original_vocab_size):
         return False
     lowered = name.lower()
-    return any(marker in lowered for marker in VOCABULARY_NAME_MARKERS)
+    parts = lowered.split(".")
+    return any(marker in lowered for marker in VOCABULARY_NAME_MARKERS) or any(
+        part in {"embed", "unembed"} for part in parts
+    )
 
 
 def vocabulary_surface_kind(name: str) -> str:
     lowered = name.lower()
     prefix = "mtp_" if any(marker in lowered for marker in ("mtp", "nextn", "multi_token")) else ""
-    return prefix + ("embedding" if "embed" in lowered else "output_head")
+    return prefix + ("embedding" if "embed" in lowered and "unembed" not in lowered else "output_head")
 
 
 def config_dict(model: str | Path) -> dict[str, Any]:

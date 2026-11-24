@@ -3,16 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import json
+import shutil
 
 from vocabpruner.checkpoints.architecture import vocabulary_surface_kind, is_checkpoint_vocab_tensor
-from vocabpruner.checkpoints.codebooks import codebook_config_ids, codebook_tensor_axis
+from vocabpruner.checkpoints.codebooks import codebook_config_ids, codebook_rules
 from vocabpruner.checkpoints.config import remap_generation_config, write_pruned_config
 from vocabpruner.errors import PruneRefusal, VocabRewriteError
 from vocabpruner.mapping import compact_token_maps
 from vocabpruner.models import PruneResult, TransformedSurface
 from vocabpruner.storage.hub import resolve_checkpoint_source
 from vocabpruner.storage.metadata import (
-    checkpoint_file_size,
     copy_checkpoint_sidecars,
     write_pruning_maps,
 )
@@ -30,6 +30,7 @@ def prune_safetensors_checkpoint(
     original_vocab_size: int,
     model_vocab_size: int | None = None,
     trust_remote_code: bool = False,
+    layers: list[str] | None = None,
 ) -> PruneResult | None:
     source = resolve_checkpoint_source(model_source, trust_remote_code=trust_remote_code)
     index = load_safetensors_index(source)
@@ -45,6 +46,8 @@ def prune_safetensors_checkpoint(
         raise RuntimeError("safetensors and torch are required for streaming checkpoint pruning.") from exc
 
     validate_safetensor_files(safetensor_paths, safe_open)
+    vocab_size = model_vocab_size or original_vocab_size
+    selected = select_checkpoint_layers(safetensor_paths, vocab_size, layers, safe_open)
 
     retained_token_ids = complete_retained_token_ids(tokenizer, retained_token_ids)
     old_to_new, new_to_old = compact_token_maps(retained_token_ids)
@@ -61,6 +64,7 @@ def prune_safetensors_checkpoint(
     write_pruned_config(config, output / "config.json", old_to_new, model_vocab_size)
     remap_generation_config(output / "generation_config.json", old_to_new, model_vocab_size)
     if tokenizer is not None:
+        shutil.rmtree(output / "tiktoken", ignore_errors=True)
         try:
             save_remapped_tokenizer(tokenizer, output, old_to_new)
         except VocabRewriteError as exc:
@@ -77,7 +81,7 @@ def prune_safetensors_checkpoint(
             metadata = handle.metadata()
             for name in handle.keys():
                 tensor = handle.get_tensor(name)
-                axis = checkpoint_vocab_axis(name, tensor.shape, model_vocab_size)
+                axis = selected.get((source_path.name, name))
                 if axis is not None:
                     tensor = tensor.index_select(axis, retained).contiguous()
                     record_checkpoint_surface(grouped_surfaces, name)
@@ -88,7 +92,7 @@ def prune_safetensors_checkpoint(
     if not grouped_surfaces and not codebook_config_ids(config):
         raise PruneRefusal("No vocabulary-bearing safetensors were found to slice.")
     write_safetensors_index(output, index, total_size)
-    pruned_checkpoint_bytes = checkpoint_file_size(output)
+    pruned_checkpoint_bytes = sum((output / path.name).stat().st_size for path in safetensor_paths)
     transformed_surfaces = tuple(
         TransformedSurface(
             name=name,
@@ -148,7 +152,7 @@ def checkpoint_safetensor_paths(source: Path, index: dict[str, Any] | None) -> l
             "Checkpoint snapshot is incomplete; safetensors file(s) are empty: "
             + ", ".join(empty)
         )
-    return paths
+    return sorted(set(paths) | set(source.glob("*.safetensors")))
 
 
 def validate_safetensor_files(paths: list[Path], safe_open: Any) -> None:
@@ -180,9 +184,57 @@ def write_safetensors_index(output: Path, index: dict[str, Any] | None, total_si
 
 
 def checkpoint_vocab_axis(name: str, shape: Any, original_vocab_size: int) -> int | None:
-    if is_checkpoint_vocab_tensor(name, shape, original_vocab_size):
-        return 0
-    return codebook_tensor_axis(name, shape, original_vocab_size)
+    known_codebook = any(name == suffix or name.endswith(f".{suffix}") for suffix, _ in codebook_rules()[0])
+    if is_checkpoint_vocab_tensor(name) or known_codebook:
+        matches = [axis for axis, size in enumerate(shape) if size == original_vocab_size]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
+def checkpoint_tensors(paths: list[Path], safe_open: Any):
+    for path in paths:
+        with safe_open(path, framework="pt", device="cpu") as handle:
+            for name in handle.keys():
+                yield path.name, name, handle.get_slice(name).get_shape()
+
+
+def select_checkpoint_layers(paths: list[Path], vocab_size: int, layers: list[str] | None, safe_open: Any) -> dict[tuple[str, str], int]:
+    tensors = list(checkpoint_tensors(paths, safe_open))
+    selected: dict[tuple[str, str], int] = {}
+    if layers is not None:
+        for value in layers:
+            name, separator, axis_text = value.rpartition(":")
+            if not separator:
+                name, axis_text = value, ""
+            if not name or (separator and not axis_text.isdecimal()):
+                raise PruneRefusal(f"Invalid layer {value!r}; use TENSOR[:AXIS].")
+            matches = [(file, shape) for file, tensor, shape in tensors if tensor == name]
+            if len(matches) != 1:
+                raise PruneRefusal(f"Layer {name!r} must match exactly one checkpoint tensor; found {len(matches)}.")
+            file, shape = matches[0]
+            axes = [axis for axis, size in enumerate(shape) if size == vocab_size]
+            if not separator and len(axes) != 1:
+                raise PruneRefusal(f"Layer {name!r} has {len(axes)} axes of size {vocab_size}; specify AXIS explicitly.")
+            axis = int(axis_text) if separator else axes[0]
+            if axis >= len(shape) or shape[axis] != vocab_size:
+                raise PruneRefusal(f"Layer {name!r} axis {axis} must have size {vocab_size}; shape is {shape}.")
+            if (file, name) in selected:
+                raise PruneRefusal(f"Layer {name!r} was specified more than once.")
+            selected[file, name] = axis
+    else:
+        for file, name, shape in tensors:
+            axis = checkpoint_vocab_axis(name, shape, vocab_size)
+            if axis is not None:
+                selected[file, name] = axis
+            elif vocab_size in shape and (shape[0] == vocab_size or is_checkpoint_vocab_tensor(name)):
+                raise PruneRefusal(
+                    f"Unrecognized vocabulary-sized tensor: {name} in {file}. "
+                    "Inspect with info-full and select tensors with --layer."
+                )
+    if not selected:
+        raise PruneRefusal("No vocabulary-bearing safetensors were selected.")
+    return selected
 
 
 def record_checkpoint_surface(grouped: dict[str, dict[str, Any]], tensor_name: str) -> None:

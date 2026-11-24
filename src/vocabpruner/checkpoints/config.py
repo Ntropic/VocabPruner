@@ -44,7 +44,11 @@ def _remap_config_value(
             child_path = f"{path}.{key_text}"
             if is_token_id_key(key_text):
                 value[key] = remap_config_token_id(child, old_to_new, child_path)
-            elif key_text == "vocab_size" and child == original_vocab_size:
+            elif (key_text == "vocab_size" and child == original_vocab_size) or (
+                key_text == "unpadded_vocab_size"
+                and isinstance(child, int)
+                and max(old_to_new, default=-1) < child <= original_vocab_size
+            ):
                 value[key] = len(old_to_new)
             else:
                 _remap_config_value(child, old_to_new, original_vocab_size, path=child_path, seen=seen)

@@ -6,6 +6,7 @@ from vocabpruner.analysis.pipeline import cached_create_only_pipeline, run_token
 from vocabpruner.analysis.scoring import settings_config
 from vocabpruner.checkpoints.architecture import (
     inspect_model_architecture,
+    is_checkpoint_vocab_tensor,
     load_model_config,
     model_vocabulary_size,
     render_model_architecture,
@@ -14,7 +15,14 @@ from vocabpruner.checkpoints.architecture import (
 from vocabpruner.checkpoints.codebooks import codebook_config_ids
 from vocabpruner.checkpoints.gguf import prune_gguf_checkpoint
 from vocabpruner.checkpoints.runtime import ensure_pruning_runtime
-from vocabpruner.checkpoints.safetensors import prune_safetensors_checkpoint
+from vocabpruner.checkpoints.safetensors import (
+    checkpoint_safetensor_paths,
+    checkpoint_tensors,
+    checkpoint_vocab_axis,
+    load_safetensors_index,
+    prune_safetensors_checkpoint,
+    validate_safetensor_files,
+)
 from vocabpruner.checkpoints.torch import load_causal_lm, prune_model_and_tokenizer
 from vocabpruner.errors import PruneRefusal, VocabRewriteError
 from vocabpruner.mapping import compact_token_maps
@@ -66,6 +74,38 @@ def inspect_command(model: str, trust_remote_code: bool = False) -> None:
         print(f"{key.replace('_', ' ').title()}: {value}")
     print()
     print(render_model_architecture(inspect_model_architecture(config)))
+
+
+def info_command(model: str, full: bool = False, trust_remote_code: bool = False) -> None:
+    from safetensors import safe_open
+
+    try:
+        config = load_model_config(model, trust_remote_code=trust_remote_code)
+        tokenizer = load_tokenizer(model, trust_remote_code=trust_remote_code)
+        vocab_size = model_vocabulary_size(inspect_model_architecture(config), len(tokenizer_records(tokenizer)))
+        source = resolve_checkpoint_source(model, trust_remote_code=trust_remote_code)
+        paths = checkpoint_safetensor_paths(source, load_safetensors_index(source))
+        if not paths:
+            raise PruneRefusal("No safetensors checkpoint found; tensor listing requires safetensors.")
+        validate_safetensor_files(paths, safe_open)
+        print(f"Checkpoint tensors (vocabulary size: {vocab_size}):")
+        unresolved = 0
+        for file, name, shape in checkpoint_tensors(paths, safe_open):
+            axis = checkpoint_vocab_axis(name, shape, vocab_size)
+            possible = [i for i, size in enumerate(shape) if size == vocab_size]
+            if axis is None and vocab_size in shape and (shape[0] == vocab_size or is_checkpoint_vocab_tensor(name)):
+                unresolved += 1
+            if not full and axis is None:
+                continue
+            label = f"auto axis={axis}" if axis is not None else (
+                f"possible axes={','.join(map(str, possible))}" if possible else ""
+            )
+            print(("* " if full and label else "") + f"{file}: {name} {shape}" + (f" [{label}]" if label else ""))
+        if unresolved:
+            print(f"Automatic pruning will refuse {unresolved} unrecognized vocabulary-sized tensor(s); inspect with info-full.")
+        print("Select exact tensor names with prune --layer TENSOR[:AXIS] (axis inferred if unique; repeat for each tensor).")
+    except (PruneRefusal, VocabRewriteError) as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def pull_command(model: str, trust_remote_code: bool = False) -> None:
@@ -168,6 +208,7 @@ def prune_command(
     related_path: str | None = None,
     related_model: str | None = None,
     save_suffix: str | None = None,
+    layers: list[str] | None = None,
 ) -> None:
     if workers < 1:
         raise SystemExit("--workers must be at least 1")
@@ -270,6 +311,8 @@ def prune_command(
         if not yes and not confirm_pruning():
             print("Pruning cancelled.")
             return
+        if layers and resolve_gguf(model) is not None:
+            raise PruneRefusal("--layer requires a safetensors checkpoint.")
         result = prune_gguf_checkpoint(
             model_source=model,
             output_dir=save,
@@ -286,8 +329,11 @@ def prune_command(
                 original_vocab_size=original_vocab_size,
                 model_vocab_size=checkpoint_vocab_size,
                 trust_remote_code=trust_remote_code,
+                layers=layers,
             )
         if result is None:
+            if layers:
+                raise PruneRefusal("--layer requires a safetensors checkpoint.")
             if tokenizer is None:
                 raise PruneRefusal("Tokenizer-less related models require a safetensors checkpoint.")
             ensure_pruning_runtime(architecture_report, assume_yes=yes)

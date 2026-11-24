@@ -84,6 +84,43 @@ def test_inspect_reports_model_architecture(monkeypatch, capsys):
     assert "- root: tied" in output
 
 
+def test_info_lists_automatic_layers_and_info_full_lists_every_tensor(monkeypatch, capsys, tmp_path):
+    torch = pytest.importorskip("torch")
+    safetensors = pytest.importorskip("safetensors.torch")
+    safetensors.save_file({
+        "model.embed_tokens.weight": torch.zeros(6, 2),
+        "unknown.weight": torch.zeros(6, 3),
+        "other.weight": torch.zeros(2, 3),
+    }, tmp_path / "model.safetensors")
+    safetensors.save_file({"markov_head.markov_w1.weight": torch.zeros(6, 2)}, tmp_path / "mtp.safetensors")
+    monkeypatch.setattr(workflows, "load_tokenizer", lambda *args, **kwargs: TinyTokenizer())
+    monkeypatch.setattr(workflows, "load_model_config", lambda *args, **kwargs: TinyConfig())
+    monkeypatch.setattr(workflows, "resolve_checkpoint_source", lambda *args, **kwargs: tmp_path)
+
+    cli.main(["info", "tiny"])
+    output = capsys.readouterr().out
+    assert "model.embed_tokens.weight [6, 2] [auto axis=0]" in output
+    assert "mtp.safetensors: markov_head.markov_w1.weight [6, 2] [auto axis=0]" in output
+    assert "unknown.weight" not in output
+    assert "other.weight" not in output
+
+    cli.main(["info-full", "tiny"])
+    output = capsys.readouterr().out
+    assert "* model.safetensors: model.embed_tokens.weight" in output
+    assert "unknown.weight [6, 3] [possible axes=0]" in output
+    assert "other.weight [2, 3]" in output
+
+
+def test_layer_arguments_select_explicit_mode():
+    parser = cli.build_parser()
+    args = parser.parse_args(["prune", "model", "--layer", "embed.weight", "--layer", "mtp.head:1"])
+    assert args.layer == ["embed.weight", "mtp.head:1"]
+    assert not args.auto
+    assert parser.parse_args(["prune", "model", "--auto"]).auto
+    with pytest.raises(SystemExit):
+        parser.parse_args(["prune", "model", "--auto", "--layer", "embed.weight"])
+
+
 def test_pull_downloads_checkpoint(monkeypatch, capsys, tmp_path):
     snapshot = tmp_path / "snapshot"
     monkeypatch.setattr(workflows, "resolve_checkpoint_source", lambda *args, **kwargs: snapshot)

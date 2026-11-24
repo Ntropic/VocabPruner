@@ -2,6 +2,7 @@ hf_models/
 lists/
 decisions/
 pruned_models/
+/*-latin-all/
 __pycache__/
 *.py[cod]
 .pytest_cache/

@@ -77,6 +77,8 @@ vocabpruner COMMAND [MODEL] [PARAMETERS]
 | --- | --- |
 | `init` | Create the optional user `.env` file. |
 | `inspect [MODEL]` | Report vocabulary metadata. |
+| `info [MODEL]` | List tensors and axes selected automatically. |
+| `info-full [MODEL]` | List all safetensors tensors, highlighting likely vocabulary tensors. |
 | `pull [MODEL]` | Download a model for local use. |
 | `analyze [MODEL]` | Preview retained and removed tokens and create reports. |
 | `prune [MODEL]` | Create a pruned Hugging Face or GGUF checkpoint. |
@@ -118,6 +120,18 @@ If neither parameter is provided, word-frequency filtering is disabled.
 | `--save-suffix` | Suffix | Replace the default `pruned` suffix. |
 | `--related-path` | Pruned-model directory | Reuse its finalized token map. |
 | `--related-model` | Model name or path | Reuse a named or explicit pruned-model directory. |
+| `--auto` | Flag | Automatically select known vocabulary tensors (default). |
+| `--layer` | `TENSOR[:AXIS]`; repeatable | Explicitly select all vocabulary tensors, including MTP and quantization tensors. Axis is inferred when unique. |
+
+`info` and `info-full` inspect safetensors headers and may download the checkpoint.
+`info-full` lists every tensor and marks candidates with `*`. Candidate labels are
+suggestions, not guarantees. With `--layer`, automatic selection
+is replaced: specify every tensor that must be pruned. For example:
+
+```bash
+vocabpruner info-full MODEL
+vocabpruner prune MODEL --layer model.embed.weight --layer model.output.weight --layer mtp.head.weight:1
+```
 
 #### Run Control
 

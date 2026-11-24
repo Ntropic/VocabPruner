@@ -74,6 +74,29 @@ def test_architecture_inspection_accepts_integer_config_keys():
     assert report.encoders == ()
 
 
+def test_padded_vocabulary_and_inkling_weight_names():
+    from vocabpruner.checkpoints.architecture import is_checkpoint_vocab_tensor, model_vocabulary_size
+    from vocabpruner.checkpoints.config import remap_model_config
+
+    config = {"text_config": {"vocab_size": 12, "unpadded_vocab_size": 10}}
+    report = inspect_model_architecture(config)
+    assert model_vocabulary_size(report, 10) == 12
+    for name in ("model.llm.embed.weight", "model.llm.unembed.weight"):
+        assert is_checkpoint_vocab_tensor(name, (12, 3), 12)
+    assert not is_checkpoint_vocab_tensor("model.llm.embed_norm.weight", (12,), 12)
+    remap_model_config(config, {0: 0, 9: 1}, 12)
+    assert config["text_config"] == {"vocab_size": 2, "unpadded_vocab_size": 2}
+
+
+def test_unindexed_safetensors_are_included(tmp_path):
+    from vocabpruner.checkpoints.safetensors import checkpoint_safetensor_paths
+
+    for name in ("model.safetensors", "mtp.safetensors"):
+        (tmp_path / name).write_bytes(b"weights")
+    paths = checkpoint_safetensor_paths(tmp_path, {"weight_map": {"embed.weight": "model.safetensors"}})
+    assert {path.name for path in paths} == {"model.safetensors", "mtp.safetensors"}
+
+
 def test_qwen35_nvfp4_reports_shared_mtp_embeddings_and_quantization():
     config = {
         "model_type": "qwen3_5_moe",

@@ -475,6 +475,54 @@ def test_prune_safetensors_checkpoint_streams_only_vocab_tensors(monkeypatch, tm
     assert report["checkpoint_size_reduction_bytes"] == result.original_checkpoint_bytes - result.pruned_checkpoint_bytes
 
 
+def test_explicit_layers_prune_selected_axes_and_mtp(tmp_path):
+    torch = pytest.importorskip("torch")
+    safetensors = pytest.importorskip("safetensors.torch")
+    source = tmp_path / "source"
+    source.mkdir()
+    safetensors.save_file({"embedding.weight": torch.arange(8).reshape(4, 2)}, source / "model.safetensors")
+    safetensors.save_file({"custom.weight": torch.arange(8).reshape(2, 4)}, source / "mtp.safetensors")
+    result = prune_safetensors_checkpoint(
+        model_source=str(source), tokenizer=None, config={"vocab_size": 4}, output_dir=tmp_path / "out",
+        retained_token_ids=[0, 2], original_vocab_size=4,
+        layers=["embedding.weight", "custom.weight"],
+    )
+    assert result is not None
+    assert safetensors.load_file(tmp_path / "out" / "model.safetensors")["embedding.weight"].tolist() == [[0, 1], [4, 5]]
+    assert safetensors.load_file(tmp_path / "out" / "mtp.safetensors")["custom.weight"].tolist() == [[0, 2], [4, 6]]
+
+    with pytest.raises(PruneRefusal, match="axis 0 must have size 4"):
+        prune_safetensors_checkpoint(
+            model_source=str(source), tokenizer=None, config={"vocab_size": 4}, output_dir=tmp_path / "invalid",
+            retained_token_ids=[0, 2], original_vocab_size=4, layers=["custom.weight:0"],
+        )
+    assert not (tmp_path / "invalid").exists()
+    with pytest.raises(PruneRefusal, match="found 0"):
+        prune_safetensors_checkpoint(
+            model_source=str(source), tokenizer=None, config={"vocab_size": 4}, output_dir=tmp_path / "missing",
+            retained_token_ids=[0, 2], original_vocab_size=4, layers=["missing.weight"],
+        )
+    assert not (tmp_path / "missing").exists()
+
+
+def test_vocabulary_axis_is_inferred_only_when_unique(tmp_path):
+    from vocabpruner.checkpoints.safetensors import checkpoint_vocab_axis, select_checkpoint_layers
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+    import torch
+
+    assert checkpoint_vocab_axis("lm_head.weight", (3, 7), 7) == 1
+    assert checkpoint_vocab_axis("model.embed_tokens.weight", (7, 3), 7) == 0
+    assert checkpoint_vocab_axis("lm_head.weight", (7, 7), 7) is None
+    path = tmp_path / "model.safetensors"
+    save_file({"lm_head.weight": torch.zeros(7, 7)}, path)
+    with pytest.raises(PruneRefusal, match="specify AXIS"):
+        select_checkpoint_layers([path], 7, ["lm_head.weight"], safe_open)
+    assert select_checkpoint_layers([path], 7, ["lm_head.weight:1"], safe_open) == {
+        (path.name, "lm_head.weight"): 1,
+    }
+
+
 def test_prune_safetensors_checkpoint_refuses_missing_indexed_file(tmp_path):
     torch = pytest.importorskip("torch")
     safetensors = pytest.importorskip("safetensors.torch")
